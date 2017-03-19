@@ -1,0 +1,9 @@
+# user can add additional packages besides base packages for development/test convenience.
+
+additional_packages_list="vim apt gcc ethtool wget ftp tftp make makedev
+ build-essential gdb u-boot-tools device-tree-compiler python python-dev
+ zip libxml2-dev libsensors4-dev libssl-dev libedit-dev liblzma-dev tree
+ binutils-dev autoconf automake gdb libssl-dev bc lmbench virt-manager
+ qemu iperf netperf docker.io sysfsutils mtd-utils openssh-server
+ libncurses5-dev flex bison libelf-dev
+ elfutils ipsec-tools curl"

@@ -1,0 +1,70 @@
+# [general]
+machine=ls1043ardb
+distro_ver=xenial_arm64
+release_ver=dash-1703
+distro_rfs_url=http://sun.ap.freescale.net/dash/Ubuntu/${release_ver}/${distro_ver}_rootfs.tgz
+bootloader=uboot
+firmware_location=nor
+nor_type=ifcnor
+nor_base_addr=0x064000000
+
+
+# [firmware_images]
+rcw=./build/qoriq-firmware/rcw/ls1043ardb/rcw_1600.bin
+uboot_norboot=./build/qoriq-firmware/u-boot/ls1043ardb/u-boot-ls1043ardb-norboot.bin
+uboot_sdboot=./build/qoriq-firmware/u-boot/ls1043ardb/u-boot-ls1043ardb-sdboot.bin
+uefi_norboot=./build/qoriq-firmware/uefi/ls1043ardb/ls1043ARDB_EFI.fd
+uefi_sdboot=./build/qoriq-firmware/uefi/ls1043ardb/LS1043ARDB_EFI_SDBOOT.fd
+uefi_env=./build/qoriq-firmware/uefi/ls1043ardb/ls1043ARDBNV_EFI.fd
+ppa=./build/qoriq-firmware/ppa/soc-ls1043/ppa.itb
+secureboot_headers=null
+fman_ucode=null
+qe_firmware=./build/qoriq-firmware/qe-ucode/iram_Type_A_LS1021a_r1.0.bin
+phy_firmware_cortina=./build/qoriq-firmware/firmware-cortina/cs4315-cs4340-PHY-ucode.txt
+dpaa2_mc_fw=null
+dpaa2_mc_dpc=null
+dpaa2_mc_dpl=null
+
+# [linux]
+kernel_src=./packages/qoriq-linux/dash-lts
+kernel_imgz=./build/qoriq-linux/dash-lts/arm64/Image.gz
+kernel_uimg=./build/qoriq-linux/dash-lts/arm64/uImage
+libmodules=./build/qoriq-linux/dash-lts/arm64/lib/modules
+
+# [dtb]
+device_tree=./build/qoriq-linux/dash-lts/arm64/fsl-ls1043a-rdb.dtb
+
+# [rootfs]
+ramdiskrfs=./build/images/ramdisk_rootfs_arm64.ext2.gz.uboot
+ubunturfs=./build/ubuntu_16.04_arm64_rootfs.tgz
+
+# [offset in unified layout of NOR flash for all machines]
+nor_rcw_offset=0x0
+nor_bootloader_offset=0x00100000
+nor_bootloader_env_offset=0x00300000
+nor_ppa_offset=0x00400000
+nor_secureboot_headers_offset=0x00600000
+nor_fman_ucode_offset=0x00900000
+nor_qe_firmware_offset=0x00940000
+nor_phy_firmware_offset=0x00980000
+nor_dpaa2_mc_fw_offset=0x00A00000
+nor_dpaa2_mc_dpl_offset=0x00D00000
+nor_dpaa2_mc_dpc_offset=0x00E00000
+nor_device_tree_offset=0x01000000
+nor_kernel_offset=0x01100000
+nor_ramdiskrfs_offset=0x02100000
+
+# [SD/eMMC card start block number in unified layout for all machines]
+sd_rcw_bootloader_offset=8
+sd_bootloader_env_offset=6152
+sd_ppa_offset=8200
+sd_secureboot_headers_offset=12296
+sd_fman_ucode_offset=18440
+sd_qe_firmware_offset=18952
+sd_phy_firmware_offset=19464
+sd_dpaa2_mc_fw_offset=20488
+sd_dpaa2_mc_dpl_offset=26632
+sd_dpaa2_mc_dpc_offset=28680
+sd_device_tree_offset=32776
+sd_kernel_offset=34824
+sd_ramdiskrfs_offset=67592

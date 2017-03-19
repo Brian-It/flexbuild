@@ -1,0 +1,166 @@
+#!/bin/bash
+
+# BSD LICENSE
+#
+# Copyright 2017 NXP
+# All rights reserved.
+#
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions
+# are met:
+#
+#   * Redistributions of source code must retain the above copyright
+#     notice, this list of conditions and the following disclaimer.
+#   * Redistributions in binary form must reproduce the above copyright
+#     notice, this list of conditions and the following disclaimer in
+#     the documentation and/or other materials provided with the
+#     distribution.
+#   * Neither the name of NXP nor the names of its
+#     contributors may be used to endorse or promote products derived
+#     from this software without specific prior written permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+# "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+# LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+# A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+# OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+# SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+# LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+# DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+# THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+# (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+#
+# Author: Shengzhou Liu <shengzhou.liu@nxp.com>
+#
+# a utility to generate custom aarch64/armhf/x86 ubutnu userland with
+# configurable packages list and proprietary components running on x86 host.
+#
+
+ARCH=`uname -m`
+
+usage() {
+    echo "usage: $0 <arch> <distro_codename>"
+    echo "e.g. $0 arm64 xenial"
+    echo "     $0 armhf xenial"
+    echo "     $0 amd64 xenial"
+    exit
+}
+
+if [ $# -lt 2 ]; then
+    usage
+fi
+
+
+if [ $ARCH = "x86_64" ]; then
+    for pkg in binfmt-support qemu qemu-user-static debootstrap; do
+        if [ ! -n "`apt-cache show $pkg | grep SHA256`" ]; then
+	    sudo apt-get -y install $pkg
+        fi
+    done
+    if [ ! -d build/images/$2_$1_rootfs.d/usr/bin ]; then
+	mkdir -p build/images/$2_$1_rootfs.d/usr/bin
+    fi
+
+    if [ $1 = arm64 ]; then
+	tgtarch=aarch64
+	sarch=arm64
+    elif [ $1 = armhf ]; then
+	tgtarch=arm
+	sarch=arm32
+    fi
+    if [ $1 != amd64 ]; then
+        cp /usr/bin/qemu-${tgtarch}-static build/images/$2_$1_rootfs.d/usr/bin
+    fi
+
+    cp $0 build/images/$2_$1_rootfs.d/usr/bin
+
+    if [ -n "$3" ]; then
+        packages_list=packages/$3
+    else
+        packages_list=packages/additional_packages_list
+    fi
+    cp -f $packages_list build/images/$2_$1_rootfs.d/
+
+    if [ ! -f build/images/$2_$1_rootfs.d/usr/bin/restool ]; then
+	./builder -c apps -a $sarch
+    fi
+
+    sudo debootstrap --arch=$1 --foreign $2 build/images/$2_$1_rootfs.d
+    echo "installing for second-stage ..."
+    DEBIAN_FRONTEND=noninteractive DEBCONF_NONINTERACTIVE_SEEN=true LC_ALL=C LANGUAGE=C LANG=C \
+    sudo chroot build/images/$2_$1_rootfs.d  /debootstrap/debootstrap  --second-stage
+    echo "configure ... "
+    DEBIAN_FRONTEND=noninteractive DEBCONF_NONINTERACTIVE_SEEN=true LC_ALL=C LANGUAGE=C LANG=C \
+    sudo chroot build/images/$2_$1_rootfs.d dpkg --configure -a
+    sudo chroot build/images/$2_$1_rootfs.d mount -t proc proc /proc
+    sudo chroot build/images/$2_$1_rootfs.d flex-mkdistrorfs $1 $2 $3
+fi
+
+
+
+
+if [ $ARCH = "aarch64" -o $ARCH = "armv7l"  ]; then
+    if [ -n "$3" ]; then
+        packages_list=./$3
+    else
+        packages_list=./additional_packages_list
+    fi
+    . $packages_list
+    rm -f $packages_list
+
+    # set locale
+    echo 'LANG="en_US.UTF-8"' >  /etc/default/locale
+    locale-gen en_US.UTF-8
+    locale-gen en_US
+
+    # set timezone
+    echo "tzdata tzdata/Areas select America" > /tmp/tmptz
+    echo "tzdata tzdata/Zones/America select Chicago" >> /tmp/tmptz
+    debconf-set-selections /tmp/tmptz
+    rm /etc/timezone
+    rm /etc/localtime
+    dpkg-reconfigure -f noninteractive tzdata
+    rm /tmp/tmptz
+
+    # create user and passwd
+    useradd -m -d /home/user -s /bin/bash user
+    gpasswd -a user sudo
+    echo -e 'root\nroot\n' | passwd root
+    echo -e 'user\nuser\n' | passwd user
+
+    # set default hostname
+    echo localhost > /etc/hostname
+
+    # set apt sources list to install additional packages
+    asl=/etc/apt/sources.list
+    rm -f $asl
+    if [ $ARCH = "x86_64" ]; then
+	fn=archive; pn=ubuntu;
+    else
+	fn=ports; pn=ubuntu-ports;
+    fi
+    echo deb http://us.$fn.ubuntu.com/$pn/ $2 main restricted >> $asl
+    echo deb http://us.$fn.ubuntu.com/$pn/ $2-updates main restricted >> $asl
+    echo deb http://$fn.ubuntu.com/$pn $2-security main restricted >> $asl
+    apt-get -y update
+    apt-get -y install language-pack-en-base
+    apt-get -y upgrade
+
+    # Add additional packages for convenience and the need of development & test.
+    echo installing additional packages: $additional_packages_list
+    apt-get -y install $additional_packages_list
+    echo "additionally packages installed."
+
+    # install cross toolchain for armhf on aarch64 machine
+    if [ $ARCH = "aarch64" ]; then
+        apt-get -y install crossbuild-essential-armhf gcc-arm-linux-gnueabihf
+    fi
+    rm -rf /etc/fstab
+    echo "UUID=865ee0da-5933-445c-b9d7-8c371d826bd2  /      ext4    errors=remount-ro 0  1" >> /etc/fstab
+    echo "UUID=c6dc39d1				     /boot  vfat    defaults          0  2" >> /etc/fstab
+    umount /proc
+    exit
+fi

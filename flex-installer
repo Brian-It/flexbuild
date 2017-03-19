@@ -1,0 +1,475 @@
+#!/bin/bash
+
+# BSD LICENSE
+#
+# Copyright 2017 NXP
+# All rights reserved.
+#
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions
+# are met:
+#
+#   * Redistributions of source code must retain the above copyright
+#     notice, this list of conditions and the following disclaimer.
+#   * Redistributions in binary form must reproduce the above copyright
+#     notice, this list of conditions and the following disclaimer in
+#     the documentation and/or other materials provided with the
+#     distribution.
+#   * Neither the name of NXP nor the names of its
+#     contributors may be used to endorse or promote products derived
+#     from this software without specific prior written permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+# "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+# LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+# A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+# OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+# SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+# LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+# DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+# THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+# (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+
+#
+# Author: Shengzhou Liu <shengzhou.liu@nxp.com>
+#
+# an installation utility to install Ubuntu/CentOS/Debian to SD/USB/SATA
+# storage media online or offline based on u-boot and/or uefi bootloader.
+#
+
+
+set -e
+
+installer_version=v1.2
+ubuntu_version=xenial_arm64
+centos_arm64_version=7.2.1606
+centos_ppc64_version=7.2.1511
+debian_version=8
+internal_img_svr=sun.ap.freescale.net
+distrosurl=http://${internal_img_svr}/dash
+release_ver=lsdk-1703
+
+ARCH=`uname -m`
+if [ ${ARCH} = "aarch64" ] ; then
+    archname=arm64
+elif [ ${ARCH} = "armv7l" ] ; then
+    archname=arm32
+elif [ ${ARCH} = "ppc64" ] ; then
+    archname=ppc64
+elif [ ${ARCH} = "ppc" ] ; then
+    archname=powerpc
+elif [ ${ARCH} = "x86_64" ] ; then
+    archname=x86_64
+fi
+
+
+usage ()
+{
+cat <<EOF
+Usage:  $0 option [argment] [option [argment]]
+OPTION:
+ -m, --media type      media type, e.g. sd, usb, sata, nor, qspi
+ -d, --distro          distro name, e.g. ubuntu, centos, debian
+ -i, --instruction     instruction to execute
+ -n, --netinterface    network interface optionally, e.g. eth0
+ -M, --machine         target machine, e.g. 'ls2088ardb', 'ls1012ardb'
+ -h, --help            print help info
+
+e.g.   
+    $0 -m sd -d ubuntu -n eth0        # install ubuntu to SD card
+    $0 -m usb -d centos               # install centos to USB disk
+    $0 -m sata -d debian -n eth2      # install debian to SATA disk
+EOF
+    exit $1
+}
+
+if [ -z "$1" -o "$1" = "--help" ] ; then
+        usage
+        exit 1
+fi
+
+
+
+ARGS=`getopt -a -o m:M:d:i:n:h -l machine:,meida:,distro:,instruction:,netinterface:,help -- "$@"`
+[ $? -ne 0 ] && usage
+eval set -- "${ARGS}"
+while true
+do
+        case "$1" in
+        -m|--meida)
+                media_type=$2
+		echo "media type:$media_type"
+                shift
+                ;;
+        -d|--distro)
+                distro_type=$2
+                echo "distro type: $distro_type"
+                shift
+                ;;
+        -i|--instruction)
+                instruction=$2
+                echo "instruction: $instruction"
+                shift
+                ;;
+        -M|--machine)
+                machine=$2
+                shift
+                ;;
+        -n|--netinterface)
+                netinterface=$2
+                echo "netinterface: $netinterface"
+                shift
+                ;;
+        -h|--help)
+                usage
+                ;;
+        --)
+                shift
+                break
+                ;;
+        esac
+shift
+done
+
+
+
+get_device_name_inside_installer() {
+    if [ "$media_type" = "sd" ] ; then
+        if [ ! -b /dev/mmcblk0 ] ; then
+            echo "SD/MMC device not available"
+            exit 1
+        else
+        disksize=$[ `fdisk -ls /dev/mmcblk0` / 1000000 ]
+        if [ ${disksize} -ge 3 ] ; then
+            echo "SD card: ${disksize} GB"
+        else
+            echo "the size of SD disk is too small: ${disksize}"
+            exit 1
+        fi
+        devname=mmcblk0
+        fi
+    elif [ "$media_type" = "usb" ] ; then
+        search_dev usb
+        devname=${devusb}
+        if [ -z "$devname" ] ; then
+            echo "USB device not available"
+            exit 1
+        fi
+    elif [ "$media_type" = "sata" ] ; then
+        search_dev sata
+        devname=${devsata}
+        if [ -z "$devname" ] ; then
+            echo "SATA device not available"
+        exit 1
+        fi
+    fi
+
+
+    if [ "$devname" = "mmcblk0" ] ; then
+        devpartname=${devname}p
+    else
+        devpartname=${devname}
+    fi
+}
+
+
+get_device_name_on_host() {
+    echo "please specify device name of storage media to install (e.g. /dev/sdb):"
+    read tmpdev
+    echo "target storage: $tmpdev"
+    devname=${tmpdev##*/}
+    if [ "$devname" = "mmcblk0" ] ; then
+        devpartname=${devname}p
+    else
+        devpartname=${devname}
+    fi
+    echo "please specify target arch name(e.g. arm64, arm32, powerpc)"
+    read archname
+    if [ "$archname" != "arm64" -a "$archname" != "arm32" -a "$archname" != "powerpc" ] ; then
+        echo "invalid arch name"
+        exit 1
+    fi
+}
+
+if [ "$ARCH" = "x86_64" ] ; then
+    get_device_name_on_host
+fi
+
+case $media_type in
+    sd|usb|sata|nor|qspi)
+        ;;
+    *)
+        echo "unsupported target media type: $media_type"
+        usage
+        exit 1
+esac
+
+if [ -n "$distro_type" ]  ; then
+  case $distro_type in
+    ubuntu)
+	if [ "$archname" = "ppc64" ] ; then
+	    archname=powerpc
+	fi
+       distroimg=Ubuntu/$release_ver/${ubuntu_version}_rootfs.tgz
+	;;
+    centos)
+	if [ "$archname" = "arm64" ] ; then
+	    distroimg=CentOS/$release_ver/dash_centos_${centos_arm64_version}_${archname}_rootfs.cpio.gz
+        elif [ "$archname" = "ppc64" ] ; then
+	    distroimg=CentOS/$release_ver/dash_centos_${centos_ppc64_version}_${archname}_rootfs.cpio.gz
+	fi
+	;;
+    debian)
+	distroimg=Debian/$release_ver/dash_debian_${debian_version}_${archname}_rootfs.cpio.gz
+	;;
+    *)
+        echo "unsupported distro: $distro_type"
+        usage
+        exit 1
+	;;
+  esac
+  bootpartitiontarball=Dash-kernel/$release_ver/bootpartition_${archname}.tgz
+fi
+
+check_network() {
+    if [ -n "$netinterface" ] ; then
+        udhcpc -i $netinterface
+    fi
+    checkroute=`ping -c 1 $internal_img_svr | grep 'transmitted' | cut -d, -f1`
+    if [ "$checkroute" != "1 packets transmitted" ] ; then
+        echo "server is not reachable"
+        echo "please configure network or specify correct network interface by -n"
+        exit 1
+    fi
+}
+
+search_dev() {
+    devlist=`ls /dev/sd?`
+    for dev in ${devlist}
+    do
+        sdx=`udevadm info -q all -n $dev | grep ID_BUS`
+        disksize=$[ `fdisk -ls $dev` / 1000000 ]
+        if [ $1 = "usb" ] ; then
+            if [ ${sdx:10:4} = "usb" -a ${disksize} -ge 3 ] ; then
+                devusb=${dev:5:3}
+		echo "USB disk: ${devusb} ${disksize} GB"
+		break
+	    fi
+	elif [ $1 = "sata" ] ; then
+	    if [ ${sdx:10:4} = "ata" -a ${disksize} -ge 8 ] ; then
+		devsata=${dev:5:3}
+		echo "SATA disk: ${devsata} ${disksize} GB"
+		break
+	    fi
+	fi
+    done
+}
+
+
+flex_install_distro() {
+    check_network
+
+    if [ "$ARCH" != "x86_64" ] ; then
+        get_device_name_inside_installer
+    fi
+
+    mntnums=`cat /proc/mounts | grep ${devname} | wc -l`
+    if [ $mntnums = 1 ] ; then
+        umount $(cat /proc/mounts | grep  ${devname} | cut -d' ' -f1)
+    else
+        for (( i=1; i <= $mntnums; i++ ))
+        do
+	    umount /dev/${devpartname}$i
+        done
+    fi
+    
+    echo "Partitioning /dev/${devname} ..."
+    echo -e "o\nn\np\n1\n131072\n716800\nn\np\n2\n716801\n\nt\n1\nb\nw\n" | fdisk /dev/${devname}
+    sync
+    
+    echo "Formatting partitions ..."
+    if [ "$media_type" = "sd" ] ; then
+        uuid1=c6dc39d1
+        uuid2=8c371d826bd2
+    elif [ "$media_type" = "usb" ] ; then
+        uuid1=c6dc39b1
+        uuid2=8c371d826bb2
+    elif [ "$media_type" = "sata" ] ; then
+        uuid1=c6dc39a1
+        uuid2=8c371d826ba2
+    fi
+    
+    mntnums=`cat /proc/mounts | grep ${devname} | wc -l`
+    if [ $mntnums = 1 ] ; then
+        umount $(cat /proc/mounts | grep  ${devname} | cut -d' ' -f1)
+    else
+        for (( i=1; i <= $mntnums; i++ ))
+        do
+            umount /dev/${devpartname}$i
+        done
+    fi
+    mkfs.vfat -n boot -i ${uuid1} /dev/${devpartname}1
+
+    mntnums=`cat /proc/mounts | grep ${devname} | wc -l`
+    if [ $mntnums = 1 ] ; then
+        umount $(cat /proc/mounts | grep  ${devname} | cut -d' ' -f1)
+    else
+        for (( i=1; i <= $mntnums; i++ ))
+        do
+            umount /dev/${devpartname}$i
+        done
+    fi 
+    mkfs.ext4 -v -O ^huge_file -b 4096 -L rootfs -U 865ee0da-5933-445c-b9d7-${uuid2} /dev/${devpartname}2
+   
+    if [ ! -d /run/media ] ; then
+        mkdir /run/media
+    fi
+    if [ ! -d /run/media/${devpartname}1 ] ; then
+        mkdir /run/media/${devpartname}1
+    fi
+    if [ ! -d /run/media/${devpartname}2 ] ; then
+        mkdir /run/media/${devpartname}2
+    fi
+    
+    mntnums=`cat /proc/mounts | grep ${devpartname} | wc -l`
+    if [ "${mntnums}" = "0" ] ; then
+        mount /dev/${devpartname}1  /run/media/${devpartname}1
+    fi
+    mount /dev/${devpartname}2  /run/media/${devpartname}2
+    
+    cd /run/media/${devpartname}1
+    #wget ${distrosurl}/${bootpartitiontarball} -O /dev/stdout | gunzip | cpio -idm
+echo trying to wget ${distrosurl}/${bootpartitiontarball}
+    wget ${distrosurl}/${bootpartitiontarball} -O /dev/stdout | tar xz
+    tbdir=$(echo `ls`)
+    mv $tbdir/* . && rm -rf $tbdir
+    sync
+    echo "partition 1 installing: finished"
+    
+    cd /run/media/${devpartname}2
+    # wget ${distrosurl}/${distroimg} -O /dev/stdout | gunzip | cpio -idm
+    echo installing ... wait ...
+    wget ${distrosurl}/${distroimg} -O /dev/stdout | tar xz
+    tbdir=$(echo `ls`)
+    mv $tbdir/* . && rm -rf $tbdir
+    if [ "$media_type" = "usb" ] ; then
+        sed -i 's/f9e57d6e38d1/f9e57d6e38b1/g' /run/media/${devpartname}2/etc/fstab
+        sed -i 's/8c371d826bd2/8c371d826bb2/g' /run/media/${devpartname}2/etc/fstab
+    elif [ "$media_type" = "sata" ] ; then
+        sed -i 's/f9e57d6e38d1/f9e57d6e38a1/g' /run/media/${devpartname}2/etc/fstab
+        sed -i 's/8c371d826bd2/8c371d826ba2/g' /run/media/${devpartname}2/etc/fstab
+    fi
+    sync
+    echo "partition 2 installing: finished"
+    cd ~
+    df -h
+    blkid
+    ckuuid=`grep 865ee0da /run/media/${devpartname}2/etc/fstab | cut -d'-' -f1`
+    if [ "$ckuuid" = "UUID=865ee0da" ] ; then
+        echo "$distro_type installation finished successfully"
+    else
+        echo "$distro_type installation failed"
+    fi
+}
+
+program_firmware_to_sd() {
+    check_network
+    case $instruction in
+        uboot)
+	    fwimage=u-boot-${machine}-sdboot.bin
+	    wget $distrosurl/Firmware/U-Boot/${release_ver}/$fwimage
+	    if [ -f $fwimage ] ; then
+		echo "burning $fwimage to sd card for ${machine} ..."
+                dd if=$fwimage of=/dev/mmcblk0 bs=1K seek=4
+	    else
+		echo "$fwimage not available"
+		exit 1
+	    fi
+	    ;;
+	uefi)
+	    fwimage=uefi-${machine}-sdboot.bin
+            wget $distrosurl/Firmware/UEFI/${release_ver}/$fwimage
+            if [ -f $fwimage ] ; then
+                dd if=$fwimage of=/dev/mmcblk0 bs=1K seek=4
+            else
+                echo "image $fwimage not available"
+                exit 1
+            fi
+	    ;;
+	ppa)
+	    fwimage=ppa-${machine}.itb
+            wget $distrosurl/Firmware/ppa/${release_ver}/$fwimage
+            if [ -f $fwimage ] ; then
+                dd if=$fwimage of=/dev/mmcblk0 bs=1K seek=13316
+            else
+                echo "image $fwimage not available"
+                exit 1
+            fi
+	    ;;
+	mcfw)
+            fwimage=mc_${machine}.itb
+            wget $distrosurl/Firmware/mc/$fwimage
+            if [ -f $fwimage ] ; then
+                dd if=$fwimage of=/dev/mmcblk0 bs=1K seek=3076
+            else
+                echo "image $fwimage not available"
+                exit 1
+            fi
+            ;;
+        fman)
+            fwimage=fman_ucode_${machine}.bin
+            wget $distrosurl/Firmware/ethphy/$fwimage
+            if [ -f $fwimage ] ; then
+                dd if=$fwimage of=/dev/mmcblk0 bs=1K seek=15364
+            else
+                echo "image $fwimage not available"
+                exit 1
+            fi
+            ;;
+        phy-cortina)
+            fwimage=cs4315-cs4340-PHY-ucode.txt
+            wget $distrosurl/Firmware/ethphy/$fwimage
+            if [ -f $fwimage ] ; then
+                dd if=$fwimage of=/dev/mmcblk0 bs=1K seek=15620
+            else
+                echo "image $fwimage not available"
+                exit 1
+            fi
+            ;;
+        dash-installer)
+            fwimage=dash_installer_${archname}.bin
+            wget $distrosurl/dash-installer/$fwimage
+            if [ -f $fwimage ] ; then
+                dd if=$fwimage of=/dev/mmcblk0 bs=1K seek=15876
+            else
+                echo "image $fwimage not available"
+                exit 1
+            fi
+            ;;
+	?)
+		echo "unsupported firmware type"
+		exit 1
+    esac
+}
+
+program_firmware_to_nor() {
+    echo "burn to nor to be done later"
+    exit 1
+}
+
+
+if [ -n "$distro_type" ] ; then
+    flex_install_distro
+elif [ -n "$BURNIMGTYPE" ] ; then
+    if [ "$media_type" = "sd" ] ; then
+        program_firmware_to_sd
+    elif [ "$media_type" = "nor" ] ; then
+        program_firmware_to_nor
+    else
+        echo "$media_type: burning firmware is not supported on this media type"
+        exit 1
+    fi
+fi

@@ -1,0 +1,545 @@
+#!/bin/bash
+
+# BSD LICENSE
+#
+# Copyright 2017 NXP
+# All rights reserved.
+#
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions
+# are met:
+#
+#   * Redistributions of source code must retain the above copyright
+#     notice, this list of conditions and the following disclaimer.
+#   * Redistributions in binary form must reproduce the above copyright
+#     notice, this list of conditions and the following disclaimer in
+#     the documentation and/or other materials provided with the
+#     distribution.
+#   * Neither the name of NXP nor the names of its
+#     contributors may be used to endorse or promote products derived
+#     from this software without specific prior written permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+# "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+# LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+# A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+# OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+# SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+# LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+# DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+# THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+# (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+
+#
+# Author: Shengzhou Liu <shengzhou.liu@nxp.com>
+#
+# Flexbuild provides an integrated development environment of build and
+# integration to generate images of various components (linux, u-boot, uefi,
+# ppa, rcw, firmware, userspace appplications) and custom ubuntu/debian userland
+# with flexible configuration of upstream packages and proprietary components.
+#
+# - support cross build on x86 host machine for arm64/arm32 arch target
+# - support native build on arm64/arm32 machine
+# - support generating ubuntu/debian userland with customized packages/components
+#
+
+set -e
+
+TOPDIR=$(cd "$(dirname "${BASH_SOURCE[0]}" )" && pwd)
+
+# set default env, overrided in run-time
+JOBS=8
+ARCH=arm64
+DESTARCH=arm64
+
+
+usage () {
+cat <<EOF
+Usage:
+flex-builder <option> <parameters> [<option> <parameters>]
+
+option:
+ -m, --machine         target machine
+ -a, --arch            target arch to override default arch, valid: 'arm64', 'arm32'
+ -b, --boottype        type of boot media, valid argument: 'nor', 'sd' 
+ -j, --jobs	       the number of build jobs
+ -c, --component       specify single or all components to build, valid argument:
+                           linux|uboot|uefi|ppa|rcw:   build single component only
+                           firmware: build all firmwares(u-boot,uefi,ppa,rcw,linux,etc)
+                           apps: build all apps tool(restool,fmc,usdpaa,dpdp,dce,etc)
+		           all:  build all components(linux, firmware, apps)
+ -i, --instruction     instruction to generate target image, valid argument:
+                           mkfw: generate firmware image for NOR/SD boot
+			   mkbootpart: generate boot partion tarball contained kernel,dtb,installer
+		           mkrfs: generate ubuntu rootfs integrated qoriq apps components
+		           mkinstaller: generate installer_<arch>.itb
+ -h, --help            print help info
+ e.g.
+    $0 -c uboot -m <machine>
+    $0 -c linux -a <arch>
+    $0 -c firmware -m <machine>
+    $0 -c all -m <machine>
+    $0 -m <machine> -b nor -i mkfw
+    $0 -a <arch> -i mkinstaller|mkrfs
+EOF
+   exit
+}
+
+if [ -z "$manifest" ]  ; then
+    if [ -f $TOPDIR/manifest/$MACHINE.manifest ]; then
+        manifest=$TOPDIR/manifest/$MACHINE.manifest
+    elif [ -f $TOPDIR/manifest/default.manifest ]; then
+        manifest=$TOPDIR/manifest/default.manifest
+    else
+        echo "not found manifest file"
+        exit 1
+    fi
+fi
+. $manifest
+
+
+
+generate_kernel_uimage() {
+    if [ ! -f $kernel_imgz ]; then
+        ./flex-builder -c linux -a $DESTARCH
+    else
+        if [ $DESTARCH = arm64 ]; then
+            mkimage -A arm64 -O linux -T kernel -C gzip  -a 0x80080000 \
+                    -e 0x80080000 -n Linux -d $kernel_imgz $kernel_uimg
+        elif [ $DESTARCH = arm32 ]; then
+            mkimage -A arm -O linux -T kernel -C none -a 0x80008000 \
+                    -e 0x80008000 -n Linux -d $kernel_imgz $kernel_uimg
+        fi
+    fi
+}
+
+generate_firmware() {
+    # generate machine-specific firmware to be programmed to NOR/SD media
+    # $1: machine name
+    # $2: boot type
+
+    echo "Generating $2boot firmware image for $1 ..."
+
+    if [ ! -d $TOPDIR/build/images ] ; then
+        mkdir -p $TOPDIR/build/images
+    fi
+    fwimg=$TOPDIR/build/images/firmware_${MACHINE}_${BOOTTYPE}boot_`date +%Y%m%d%H%M`.img
+    echo "fwimg: $fwimg"
+    if [ ! -d $TOPDIR/images/$1 ] ; then
+	mkdir -p $TOPDIR/images/$1
+    fi
+    if [ -f $fwimg ] ; then
+	rm -f $fwimg
+    fi
+
+    # 1. rcw and bootloader (u-boot/uefi/ppa)
+    if [ $2 = nor ] ; then
+	dd if=$rcw of=$fwimg bs=1K seek=0
+	val=`expr $(echo $(($nor_bootloader_offset))) / 1024`
+	if [ $bootloader = uboot ] ; then
+	    dd if=$uboot_norboot of=$fwimg bs=1K seek=$val
+	elif [ $bootloader = "uefi" ] ; then
+	    dd if=$uefi_norboot of=$fwimg bs=1K seek=$val
+	fi
+    elif [ $2 = sd -a $bootloader = uboot ] ; then
+	# rcw and uboot in single image
+	echo step 1 $sd_rcw_bootloader_offset
+	dd if=$uboot_sdboot of=$fwimg bs=512 seek=$sd_rcw_bootloader_offset
+    fi
+
+    # 2. bootloader environment varialbe
+    if [ $bootloader = uefi ] ; then
+        if [ $uefi_env != null ] ; then
+	    if [ $2 = nor ]; then
+	        val=val=`expr $(echo $(($nor_bootloader_env_offset))) / 1024`
+	        dd if=$uefi_env of=$fwimg bs=1K seek=$val
+	    elif [ $2 = sd ]; then
+		dd if=$uefi_env of=$fwimg bs=512 seek=$sd_bootloader_env_offset
+	    fi
+        fi
+    fi
+
+    # 3. ppa firmware
+    if [ $ppa != null ] ; then
+	if [ $2 = nor ]; then
+	    val=`expr $(echo $(($nor_ppa_offset))) / 1024`
+	    dd if=$ppa of=$fwimg bs=1K seek=$val
+	elif [ $2 = sd ]; then
+	    dd if=$ppa of=$fwimg bs=512 seek=$sd_ppa_offset
+	fi
+    fi
+
+    # 4. secure boot headers
+    if [ $secureboot_headers != null ] ; then
+	if [ $2 = nor ]; then
+            val=`expr $(echo $(($nor_secureboot_headers_offset))) / 1024`
+            dd if=$secureboot_headers of=$fwimg bs=1K seek=$val
+	elif [ $2 = sd ]; then
+	    dd if=$secureboot_headers of=$fwimg bs=512 seek=$sd_secureboot_headers_offset
+	fi	
+    fi
+
+    # 5. DPAA1 FMan ucode firmware
+    if [ $fman_ucode != null ] ; then
+	if [ $2 = nor ]; then
+            val=`expr $(echo $(($nor_fman_ucode_offset))) / 1024`
+            dd if=$fman_ucode of=$fwimg bs=1K seek=$val
+	elif [ $2 = sd ]; then
+	    dd if=$fman_ucode of=$fwimg bs=512 seek=$sd_fman_ucode_offset
+	fi
+    fi
+
+    # 6. QE/uQE firmware
+    if [ $qe_firmware != null ] ; then
+	if [ $2 = nor ]; then
+            val=`expr $(echo $(($nor_qe_firmware_offset))) / 1024`
+            dd if=$qe_firmware of=$fwimg bs=1K seek=$val
+	elif [ $2 = sd ]; then
+	    dd if=$qe_firmware of=$fwimg bs=512 seek=$sd_qe_firmware_offset
+	fi
+    fi
+
+    # 7. ethernet phy firmware
+    if [ $phy_firmware != null ] ; then
+	if [ $2 = nor ]; then
+            val=`expr $(echo $(($nor_phy_firmware_offset))) / 1024`
+            dd if=$phy_firmware of=$fwimg bs=1K seek=$val
+	elif [ $2 = sd ]; then
+		 echo step7-$sd_phy_firmware_offset
+	    dd if=$phy_firmware of=$fwimg bs=512 seek=$sd_phy_firmware_offset
+	fi
+    fi
+
+    # 8. DPAA2 MC firmware
+    if [ $dpaa2_mc_fw != null ] ; then
+	if [ $2 = nor ]; then
+            val=`expr $(echo $(($nor_dpaa2_mc_fw_offset))) / 1024`
+            dd if=$dpaa2_mc_fw of=$fwimg bs=1K seek=$val
+	elif [ $2 = sd ]; then
+	    dd if=$dpaa2_mc_fw of=$fwimg bs=512 seek=$sd_dpaa2_mc_fw_offset
+	fi
+    fi
+
+    # 9. DPAA2 DPL firmware
+    if [ $dpaa2_mc_dpl != null ] ; then
+	if [ $2 = nor ]; then
+            val=`expr $(echo $(($nor_dpaa2_mc_dpl_offset))) / 1024`
+            dd if=$dpaa2_mc_dpl of=$fwimg bs=1K seek=$val
+	elif [ $2 = sd ]; then
+	    dd if=$dpaa2_mc_dpl of=$fwimg bs=512 seek=$sd_dpaa2_mc_dpl_offset
+	fi
+    fi
+
+    # 10. DPAA2 DPC firmware
+    if [ $dpaa2_mc_dpc != null ] ; then
+	if [ $2 = nor ]; then
+            val=`expr $(echo $(($nor_dpaa2_mc_dpc_offset))) / 1024`
+            dd if=$dpaa2_mc_dpc of=$fwimg bs=1K seek=$val
+	elif [ $2 = sd ]; then
+	    dd if=$dpaa2_mc_dpc of=$fwimg bs=512 seek=$sd_dpaa2_mc_dpc_offset
+	fi
+    fi
+
+    # 11. device tree image
+    if [ $device_tree != null ] ; then
+	if [ $2 = nor ]; then
+            val=`expr $(echo $(($nor_device_tree_offset))) / 1024`
+            dd if=$device_tree of=$fwimg bs=1K seek=$val
+	elif [ $2 = sd ]; then
+	    dd if=$device_tree of=$fwimg bs=512 seek=$sd_device_tree_offset
+	fi
+    fi
+
+    # 12. linux kernel image
+    if [ $kernel_uimg != null ] ; then
+	if [ ! -f $kernel_uimg ]; then
+	    generate_kernel_uimage
+	fi
+	if [ $2 = nor ]; then
+            val=`expr $(echo $(($nor_kernel_uimg_offset))) / 1024`
+            dd if=$kernel_uimg of=$fwimg bs=1K seek=$val
+	elif [ $2 = sd ]; then
+	    dd if=$kernel_uimg of=$fwimg bs=512 seek=$sd_kernel_uimg_offset
+	fi
+    fi
+
+    # 13. ramdisk rfs image
+    if [ $ramdiskrfs != null ] ; then
+	if [ ! -f $ramdiskrfs  ]; then
+	    if [ $DESTARCH = arm32 ]; then
+		ARCHNAME=arm
+	    else
+		ARCHNAME=arm64
+	    fi
+	    mkimage -n 'u-boot ext2 ramdisk rfs' -A $ARCHNAME -O linux -T ramdisk -C gzip -d \
+	    packages/installer/ramdisk_rootfs_$DESTARCH.ext2.gz \
+	    build/images/ramdisk_rootfs_$DESTARCH.ext2.gz.uboot   
+	fi
+	if [ $2 = nor ]; then
+            val=`expr $(echo $(($nor_ramdiskrfs_offset))) / 1024`
+            dd if=$ramdiskrfs of=$fwimg bs=1K seek=$val
+	elif [ $2 = sd ]; then
+	    dd if=$ramdiskrfs of=$fwimg bs=512 seek=$sd_ramdiskrfs_offset
+	fi
+    fi
+    echo generated $fwimg
+}
+
+
+generate_installer() {
+    if [ ! -f $kernel_imgz ]; then
+	echo "$kernel_imgz not found, trying to generate it ..."
+	./flex-builder -c linux -a ${DESTARCH}
+    fi
+    if [ ! -d packages/installer/ramdiskrfs ]; then
+	make distroinstaller
+    fi
+    cd packages/installer/ramdiskrfs
+    if [ ! -f ramdisk_rootfs_${DESTARCH}.ext2 ]; then
+	if [ -f ramdisk_rootfs_${DESTARCH}.ext2.gz ]; then
+	    gunzip ramdisk_rootfs_${DESTARCH}.ext2.gz
+	else
+            echo ramdisk_rootfs_${DESTARCH}.ext2.gz not found
+	    exit 1
+	fi
+    fi
+    cd ..
+    rm -rf mnt-*
+    mntdir=mnt-`date +%Y%m%d%H%M%S`
+    mkdir $mntdir
+    ckmnt=`mount | grep $mntdir` ||true
+    if [ -z "$ckmnt"  ]; then
+	sudo mount ramdiskrfs/ramdisk_rootfs_${DESTARCH}.ext2 $mntdir
+    fi
+    cp -f ../../flex-installer $mntdir/usr/bin/; cd ../..
+    module_name=$(echo `ls -t $libmodules` | cut -d' ' -f1)
+    rm -f $libmodules/$module_name/{build,source}
+    sudo cp -rf $libmodules/$module_name packages/installer/$mntdir/lib/modules
+    sudo umount packages/installer/$mntdir && rm -rf packages/installer/$mntdir && gzip packages/installer/ramdiskrfs/ramdisk_rootfs_${DESTARCH}.ext2
+    if [ ! -d build/images ]; then
+	mkdir -p build/images
+    fi
+    mkimage -f packages/installer/installer_${DESTARCH}.its build/images/flex_installer_${DESTARCH}.itb
+    echo build/images/flex_installer_${DESTARCH}.itb  [Done]
+}
+
+
+generate_bootpartition_tarball() {
+    # fill stuff for boot partition used by uboot or uefi
+    if [ ! -f build/images/flex_installer_$DESTARCH.itb ]; then
+	./flex-builder -i mkinstaller -a $DESTARCH
+    fi
+
+    if [ ! -f $kernel_uimg ]; then
+        generate_kernel_uimage
+    fi
+    cp build/images/flex_installer_$DESTARCH.itb build/images/bootpartition_$DESTARCH.d/
+    kernelrelease=$(cd $kernel_src && cat include/config/kernel.release 2> /dev/null)
+    linuxtreename=$(echo $kernel_uimg | cut -d/ -f4)
+    cp $kernel_uimg build/images/bootpartition_$DESTARCH.d/uImage-$kernelrelease
+    cp build/qoriq-linux/$linuxtreename/$DESTARCH/*.dtb build/images/bootpartition_$DESTARCH.d/
+    cd build/images/bootpartition_$DESTARCH.d && ln -s uImage-$kernelrelease vmlinuz
+    cd $TOPDIR/build/images
+    tar cvzf  bootpartition_$DESTARCH.tgz bootpartition_$DESTARCH.d
+    echo build/images/bootpartition_$DESTARCH.tgz  [Done]
+}
+
+generate_distrorfs_tarball() {
+    ./flex-builder -c apps -a $DESTARCH
+    if [ ! -f build/images/${distro_ver}_rootfs.d/etc/issue ]; then
+        if [ ! -f build/images/${distro_ver}_rootfs.tgz ]; then
+	    if [ $origin_mkdistrorfs != y ]; then
+	        echo "trying to download $distro_rfs_url ..."
+	        cd build/images && wget $distro_rfs_url || true
+	    fi
+	    if [ ! -f ${distro_ver}_rootfs.tgz ]; then
+		echo "trying to build ${distro_ver}_rootfs locally ..."
+		codename=$(echo $distro_ver | cut -d_ -f1)
+		tarch=$(echo $distro_ver | cut -d_ -f2)
+		./mkdistrorfs $tarch $codename
+	    fi
+        fi
+        cd $TOPDIR/build/images
+	if [  -f ${distro_ver}_rootfs.tgz ]; then
+	    tar xzf ${distro_ver}_rootfs.tgz
+	fi
+    fi
+    tar cvzf ${distro_ver}_rootfs_`date +%Y%m%d%H%M`.tgz  ${distro_ver}_rootfs.d
+    echo build/images/${distro_ver}_rootfs_`date +%Y%m%d%H%M`.tgz  [Done]
+}
+
+
+if [ -z "$1" ] ; then
+	usage
+	exit 1
+fi
+
+
+ARGS=`getopt -a -o m:j:a:b:c:i:h -l machine:,jobs:,arch:,boottype:,component:,instruction:,origin,help -- "$@"`
+[ $? -ne 0 ] && usage
+eval set -- "${ARGS}"
+while true
+do
+	case "$1" in
+	-m|--machine)
+		MACHINE=$2
+		echo "MACHINE: $MACHINE"
+		shift
+		;;
+	-j|--jobs)
+		JOBS=$2
+		echo JOBS: $JOBS
+		shift
+		;;
+	-a|--arch)
+		DESTARCH=$2
+		echo "DESTARCH: $DESTARCH"
+		shift
+		;;
+	-b|boottype)
+		BOOTTYPE=$2
+		echo "BOOTTYPE: $BOOTTYPE"
+		shift
+		;;
+	-c|--component)
+		COMPONENT=$2
+		echo "COMPONENT: $COMPONENT"
+		shift
+		;;
+	-i|--instruction)
+		INSTRUCTION=$2
+		echo "INSTRUCTION: $INSTRUCTION"
+		shift
+		;;
+	--origin)
+		origin_mkdistrorfs=y
+		shift
+		;;
+	-h|--help)
+		usage
+		;;
+	--)
+		shift
+		break
+		;;
+	esac
+shift
+done
+
+DESTDIR=$TOPDIR/build/images/${distro_ver}_rootfs.d
+
+if [ ! -d $DESTDIR ]; then
+    mkdir -p $DESTDIR
+fi
+if [ ! -d build/images/bootpartition_$DESTARCH.d/grub ]; then
+    mkdir -p build/images/bootpartition_$DESTARCH.d/grub
+fi
+
+
+if [ ! $(echo $JOBS | grep '^[0-9]\{1,2\}$' | grep '^[1-9]') ]; then
+   echo "invalid parameter $JOBS for JOBS, valid range: 1 to 99"
+   exit 1
+fi
+
+
+case $COMPONENT in
+    uboot|uefi|firmware)
+	if [ -z $MACHINE ] ;then
+	    echo "please specify -m parameter (machine name or all)"
+	    exit 1
+	fi
+	;;
+    *)
+       ;;
+esac
+
+
+if [ ! -z $MACHINE ]; then
+    if [ ${MACHINE:0:6} = ls1021 ]; then
+	export ARCH=arm
+	export DESTARCH=arm32
+    fi
+fi
+
+if [ $DESTARCH = arm32 ]; then
+    export ARCH=arm
+fi
+
+if [ "$INSTRUCTION" = "mkfw" ]; then
+    if [ -z $MACHINE ]; then
+        echo "please specify -m parameter (machine name or all)"
+        exit 1
+    fi
+    if [ -z $BOOTTYPE ]; then
+        echo "please specify -b parameter for BOOTTPYE"
+        exit 1
+    fi
+    generate_firmware $MACHINE $BOOTTYPE $MANIFEST
+elif [ "$INSTRUCTION" = "mkrfs" ]; then
+    generate_distrorfs_tarball
+elif [ "$INSTRUCTION" = "mkinstaller" ]; then
+    generate_installer
+elif [ "$INSTRUCTION" = "mkbootpart" ]; then
+    generate_bootpartition_tarball
+fi
+
+if [ $DESTARCH = arm32 -a `uname -m` = x86_64 ]; then
+    if [ ! $(which arm-linux-gnueabihf-gcc) ]; then
+	echo -e "\ncross toolchain not found, please run:"
+	echo "sudo apt-get install crossbuild-essential-armhf gcc-arm-linux-gnueabihf"
+	exit 1
+    fi
+    export ARCH=arm
+    export CROSS_COMPILE=arm-linux-gnueabihf-
+elif [ $DESTARCH = arm64 -a `uname -m` = x86_64 ]; then
+    if [ ! $(which aarch64-linux-gnu-gcc) ]; then
+	echo -e "\ncross toolchain not found, please run:"
+	echo -e "sudo apt-get install crossbuild-essential-arm64 gcc-aarch64-linux-gnu"
+	exit 1
+    fi
+    export ARCH=arm64
+    export CROSS_COMPILE=aarch64-linux-gnu-
+elif [ $(uname -m) = aarch64 -o $(uname -m) = armv7l ]; then
+    if [ $DESTARCH = arm32 ]; then
+	export ARCH=arm
+    else
+	export ARCH=$TESTARCH
+    fi
+    export CROSS_COMPILE=
+fi
+
+export ARCH DESTARCH CROSS_COMPILE TOPDIR DESTDIR JOBS COMPONENT MACHINE
+
+case $COMPONENT in
+    uboot)
+	make uboot
+	;;
+    uefi)
+	make uefi
+	;;
+    ppa)
+	make ppa
+	;;
+    rcw)
+	make rcw
+	;;
+    firmware)
+	make firmware
+	;;
+    linux)
+	make linux
+	;;
+    apps)
+	make apps
+	;;
+    all)
+	make all
+	;;
+    *)
+	exit
+	;;
+esac
+

@@ -1,0 +1,91 @@
+What is Flexbuild
+-----------------
+     Flexbuild is a build framework with build, installation, integration.
+     It builds images and firmwares for various components (linux,uboot,uefi,
+     ppa,rcw,firmware,apps) and distros images.
+     - support cross build on any x86 Linux host machine for arm64/arm32 arch target
+     - support native build on arm64/arm32 machine for arm arch target
+     - generate custom aarch64/armhf ubutnu rootfs integrated configurable
+       upstream packages and proprietary components.
+
+
+
+How to build viarious components and ubutnu based userland with Flexbuild
+-------------------------------------------------------------------------
+    This build system supports following 3 kinds of build environment:
+    - support cross build on X86 ubuntu 16.04 host machine for ARM target machine (default ubuntu cross toolchain 5.4 for aarch64/armhf)
+    - support native build on aarch64/armhf machine for ARM target machine (default ubuntu native toolchain 5.4 for aarch64/armhf)
+   - support build in docker container without environment dependency of ubuntu host machine
+
+As well, it supports cross generating custom aarch64/armhf/x86 ubutnu rootfs with preinstalled
+packages specified by TOPDIR/packages/additional_packages_list and NXP's components on X86 host machine.
+
+ 1. clone git repo
+	for internal:
+	$ git clone  ssh://git@sw-stash.freescale.net/dash/flexbuild.git
+
+	for external:
+	$ git clone  ssh://github.com/qoriq-open-source/flexbuild.git
+
+
+ 2. optionally, check default build.cfg as per actual need, check <machine>.manifest to match actual machine.
+
+
+ 3. build single or all desired component(s) to generate target images/firmwares/userland tarball
+	e.g.
+	./builder --help			// view help info
+	./builder -c uboot -m ls2088ardb	// build u-boot for machine ls2088ardb
+	./builder -c linux -a arm64		// build linux for arm64
+	./builder -c apps -a arm64		// build all apps components for arm64 machines
+	./builder -c firmware -m ls1043ardb     // build all firmwares for machine ls1043ardb
+	./builder -i mkfw -m ls2088ardb -b nor  // generate firmware image for norboot on ls2088ardb
+	./builder -i mkinstaller -a arm64       // generate installer_arm64.itb for all arm64 machines
+	./builder -i mkrfs -a arm64		// generate ubuntu userland contained nxp's apps components
+
+
+
+Install
+-------
+case 1: install ubuntu to SD/USB/SATA media attached on QorIQ ARM machine/board online via network
+	download installer from http://sun.ap.freescale.net/dash/Dash-installer and put it to tftp server directory.
+
+	for arm64:
+	=> tftp a0000000 flex_installer_arm64.itb
+	=> bootm a0000000#<board-name>
+	<board-name>: ls1012ardb ls1012afrdm ls1021atwr ls1043ardb ls1046ardb ls2088ardb
+
+	for arm32:
+	=> tftp a0000000 flex_installer_arm32.itb
+	=> bootm a0000000#<board-name>
+	<board-name>: ls1021atwr, ls1043ardb, ls1046ardb, ls1012ardb, ls1012frdm
+
+	after entering Linux prompt, run 'installer' command.
+	Usage:  installer OPTION [ARG] [OPTION [ARG]]
+	OPTION:
+	-m : media type of the target disk, e.g. 'sd', 'usb', 'sata'
+	-d : distro name, e.g. 'ubuntu', 'centos', 'debian'
+	-n : NIC name to configure Ethernet IP by DHCP, e.g. 'eth0', 'enp0s2', optionally
+	-h : print help info
+
+	e.g. flex-installer -m sd -d ubuntu -n eth0
+
+
+case 2: install ubuntu to SD/USB/SATA disk attached on x86 Linux machine offline without network
+	a. insert SD/USB/SATA storage media to X86 Linux host machine
+	b. untar the *.tgz ubuntu tarball and find installer in the root directory of untar package
+	b. run ./flex-installer
+
+
+
+How to add additional upstream packages to ubuntu userland
+----------------------------------------------------------
+	1. add desired packages to packages/additional_packages_list
+	2. run ./flex-builder -i mkrfs -a <arch>
+
+
+
+How to enable/disable various components
+-----------------------------------------
+	1. set BUILD_<component> to y or n in build.cfg
+	2. run ./builder -c <component> -a <arch>
+
