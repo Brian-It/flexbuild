@@ -13,7 +13,7 @@
 	images {
 		kernel {
 			description = "ARM32 Linux kernel";
-			data = /incbin/("../../build/qoriq-linux/dash-lts/arm32/zImage");
+			data = /incbin/("../../build/qoriq-linux/linux/arm32/zImage");
 			type = "kernel";
 			arch = "arm";
 			os = "linux";
@@ -34,7 +34,7 @@
 
 		ls1021atwr-dtb {
 			description = "Flattened Device Tree blob";
-			data = /incbin/("../../build/qoriq-linux/dash-lts/arm32/fsl-ls1021a-twr.dtb");
+			data = /incbin/("../../build/qoriq-linux/linux/arm32/fsl-ls1021a-twr.dtb");
 			type = "flat_dt";
 			arch = "arm";
 			compression = "none";

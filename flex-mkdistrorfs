@@ -56,7 +56,9 @@ fi
 
 if [ $ARCH = "x86_64" ]; then
     for pkg in binfmt-support qemu qemu-user-static debootstrap; do
-        if [ ! -n "`apt-cache show $pkg | grep SHA256`" ]; then
+	chkpkg=$(dpkg-query -W $pkg 2>&1 | grep 'no packages found')
+        if [ -n "$chkpkg" ]; then
+	    echo $pkg not found, installing $pkg
 	    sudo apt-get -y install $pkg
         fi
     done
@@ -75,7 +77,8 @@ if [ $ARCH = "x86_64" ]; then
         cp /usr/bin/qemu-${tgtarch}-static build/images/$2_$1_rootfs.d/usr/bin
     fi
 
-    cp $0 build/images/$2_$1_rootfs.d/usr/bin
+    cp flex-mkdistrorfs build/images/$2_$1_rootfs.d/usr/bin
+    cp flex-installer build/images/$2_$1_rootfs.d/usr/bin
 
     if [ -n "$3" ]; then
         packages_list=packages/$3
@@ -85,9 +88,16 @@ if [ $ARCH = "x86_64" ]; then
     cp -f $packages_list build/images/$2_$1_rootfs.d/
 
     if [ ! -f build/images/$2_$1_rootfs.d/usr/bin/restool ]; then
-	./builder -c apps -a $sarch
+	./flex-builder -c apps -a $sarch
     fi
 
+    libmodules=build/qoriq-linux/linux/$sarch/lib/modules
+    if [ ! -d $libmodules ]; then
+	./flex-builder -c linux -a $sarch
+    fi
+    module_name=$(echo `ls -t $libmodules` | cut -d' ' -f1)
+    rm -f $libmodules/$module_name/{build,source}
+    sudo cp -rf $libmodules/$module_name build/images/$2_$1_rootfs.d/lib/modules/
     sudo debootstrap --arch=$1 --foreign $2 build/images/$2_$1_rootfs.d
     echo "installing for second-stage ..."
     DEBIAN_FRONTEND=noninteractive DEBCONF_NONINTERACTIVE_SEEN=true LC_ALL=C LANGUAGE=C LANG=C \
@@ -97,6 +107,7 @@ if [ $ARCH = "x86_64" ]; then
     sudo chroot build/images/$2_$1_rootfs.d dpkg --configure -a
     sudo chroot build/images/$2_$1_rootfs.d mount -t proc proc /proc
     sudo chroot build/images/$2_$1_rootfs.d flex-mkdistrorfs $1 $2 $3
+    sudo rm -rf build/images/$2_$1_rootfs.d/debootstrap
 fi
 
 
@@ -159,8 +170,8 @@ if [ $ARCH = "aarch64" -o $ARCH = "armv7l"  ]; then
         apt-get -y install crossbuild-essential-armhf gcc-arm-linux-gnueabihf
     fi
     rm -rf /etc/fstab
-    echo "UUID=865ee0da-5933-445c-b9d7-8c371d826bd2  /      ext4    errors=remount-ro 0  1" >> /etc/fstab
-    echo "UUID=c6dc39d1				     /boot  vfat    defaults          0  2" >> /etc/fstab
+    echo "UUID=865ee0da-5933-445c-b9d7-8c371d826bd3  /      ext4    errors=remount-ro 0  1" >> /etc/fstab
+    echo "UUID=c6dc39a1-a7f2-4b75-b1a0-6a681517b8d2  /boot  ext4    defaults          0  2" >> /etc/fstab
     umount /proc
     exit
 fi

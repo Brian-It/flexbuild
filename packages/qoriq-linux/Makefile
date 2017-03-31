@@ -28,8 +28,7 @@ endif
 all: setup-gits build-linux
 
 setup-gits:
-	@$(foreach name,$(LINUX_TREE_LIST),test -d $(name) || (git clone $(LSDK_STASH_GIT)/$(name).git \
-		&& git checkout $(LTS_BRANCH) -b $(LTS_BRANCH_NAME)))
+	@$(foreach name,$(LINUX_TREE_LIST),test -d $(name) || (git clone $(LSDK_GITHUB_URL)/$(name).git))
 
 build-linux:
 ifneq ($(BUILD_LINUX)_$(BUILD_LTS), n_n)
@@ -49,7 +48,7 @@ ifneq ($(BUILD_LINUX)_$(BUILD_LTS), n_n)
 		    git checkout $(LTS_BRANCH) -b $(LTS_BRANCH_NAME); \
 		    else git checkout $(LTS_BRANCH_NAME); fi; \
 		fi; \
-		$(MAKE) mrproper; $(MAKE) $(DEFCONFIG_LIST); $(MAKE) -j$(PARALLELJOBS) all; \
+		$(MAKE) mrproper; $(MAKE) $(DEFCONFIG_LIST); $(MAKE) -j$(JOBS) all; \
 		$(MAKE) modules; $(MAKE) INSTALL_MOD_PATH=$(TOPDIR)/build/qoriq-linux/$$ltree/$(DESTARCH) modules_install; \
 		if [ ! -d  $(TOPDIR)/build/qoriq-linux/$$ltree/$(DESTARCH) ]; then \
 		mkdir -p $(TOPDIR)/build/qoriq-linux/$$ltree/$(DESTARCH); fi && \

@@ -13,7 +13,7 @@
 	images {
 		kernel {
 			description = "ARM64 Kernel";
-			data = /incbin/("../../build/qoriq-linux/dash-lts/arm64/Image.gz");
+			data = /incbin/("../../build/qoriq-linux/linux/arm64/Image.gz");
 			type = "kernel";
 			arch = "arm64";
 			os = "linux";
@@ -41,7 +41,7 @@
 
 		ls2080ardb-dtb {
 			description = "ls2080ardb-dtb";
-			data = /incbin/("../../build/qoriq-linux/dash-lts/arm64/fsl-ls2080a-rdb.dtb");
+			data = /incbin/("../../build/qoriq-linux/linux/arm64/fsl-ls2080a-rdb.dtb");
 			type = "flat_dt";
 			arch = "arm64";
 			os = "linux";
@@ -54,7 +54,7 @@
 
 		ls2088ardb-dtb {
 			description = "ls2088ardb-dtb";
-			data = /incbin/("../../build/qoriq-linux/dash-lts/arm64/fsl-ls2088a-rdb.dtb");
+			data = /incbin/("../../build/qoriq-linux/linux/arm64/fsl-ls2088a-rdb.dtb");
 			type = "flat_dt";
 			arch = "arm64";
 			os = "linux";
@@ -67,7 +67,7 @@
 
 		ls1088ardb-dtb {
 			description = "ls1088ardb-dtb";
-			data = /incbin/("../../build/qoriq-linux/dash-lts/arm64/fsl-ls1088a-rdb.dtb");
+			data = /incbin/("../../build/qoriq-linux/linux/arm64/fsl-ls1088a-rdb.dtb");
 			type = "flat_dt";
 			arch = "arm64";
 			os = "linux";
@@ -80,7 +80,7 @@
 
 		ls1043ardb-dtb {
 			description = "ls1043ardb-dtb";
-			data = /incbin/("../../build/qoriq-linux/dash-lts/arm64/fsl-ls1043a-rdb.dtb");
+			data = /incbin/("../../build/qoriq-linux/linux/arm64/fsl-ls1043a-rdb.dtb");
 			type = "flat_dt";
 			arch = "arm64";
 			os = "linux";
@@ -93,7 +93,7 @@
 
 		ls1046ardb-dtb {
 			description = "ls1046ardb-dtb";
-			data = /incbin/("../../build/qoriq-linux/dash-lts/arm64/fsl-ls1046a-rdb.dtb");
+			data = /incbin/("../../build/qoriq-linux/linux/arm64/fsl-ls1046a-rdb.dtb");
 			type = "flat_dt";
 			arch = "arm64";
 			os = "linux";
@@ -106,7 +106,7 @@
 
 		ls1012ardb-dtb {
 			description = "ls1012ardb-dtb";
-			data = /incbin/("../../build/qoriq-linux/dash-lts/arm64/fsl-ls1012a-rdb.dtb");
+			data = /incbin/("../../build/qoriq-linux/linux/arm64/fsl-ls1012a-rdb.dtb");
 			type = "flat_dt";
 			arch = "arm64";
 			os = "linux";
@@ -119,7 +119,7 @@
 
 		ls1012afrdm-dtb {
 			description = "ls1012afrdm-dtb";
-			data = /incbin/("../../build/qoriq-linux/dash-lts/arm64/fsl-ls1012a-frdm.dtb");
+			data = /incbin/("../../build/qoriq-linux/linux/arm64/fsl-ls1012a-frdm.dtb");
 			type = "flat_dt";
 			arch = "arm64";
 			os = "linux";

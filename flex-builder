@@ -36,15 +36,6 @@
 #
 # Author: Shengzhou Liu <shengzhou.liu@nxp.com>
 #
-# Flexbuild provides an integrated development environment of build and
-# integration to generate images of various components (linux, u-boot, uefi,
-# ppa, rcw, firmware, userspace appplications) and custom ubuntu/debian userland
-# with flexible configuration of upstream packages and proprietary components.
-#
-# - support cross build on x86 host machine for arm64/arm32 arch target
-# - support native build on arm64/arm32 machine
-# - support generating ubuntu/debian userland with customized packages/components
-#
 
 set -e
 
@@ -67,15 +58,15 @@ option:
  -b, --boottype        type of boot media, valid argument: 'nor', 'sd' 
  -j, --jobs	       the number of build jobs
  -c, --component       specify single or all components to build, valid argument:
-                           linux|uboot|uefi|ppa|rcw:   build single component only
-                           firmware: build all firmwares(u-boot,uefi,ppa,rcw,linux,etc)
-                           apps: build all apps tool(restool,fmc,usdpaa,dpdp,dce,etc)
-		           all:  build all components(linux, firmware, apps)
+			   linux|uboot|uefi|ppa|rcw:   build single component only
+			   firmware: build all firmwares(u-boot,uefi,ppa,rcw,linux,etc)
+			   apps: build all apps tool(restool,fmc,usdpaa,dpdp,dce,etc)
+			   all:  build all components(linux, firmware, apps)
  -i, --instruction     instruction to generate target image, valid argument:
-                           mkfw: generate firmware image for NOR/SD boot
+			   mkfw: generate firmware image for NOR/SD boot
+			   mkinstaller: generate flex_installer_<arch>.itb
 			   mkbootpart: generate boot partion tarball contained kernel,dtb,installer
-		           mkrfs: generate ubuntu rootfs integrated qoriq apps components
-		           mkinstaller: generate installer_<arch>.itb
+			   mkrfs: generate ubuntu userland integrated specified packages and apps components
  -h, --help            print help info
  e.g.
     $0 -c uboot -m <machine>
@@ -83,23 +74,10 @@ option:
     $0 -c firmware -m <machine>
     $0 -c all -m <machine>
     $0 -m <machine> -b nor -i mkfw
-    $0 -a <arch> -i mkinstaller|mkrfs
+    $0 -a <arch> -i mkinstaller|mkbootpart|mkrfs
 EOF
    exit
 }
-
-if [ -z "$manifest" ]  ; then
-    if [ -f $TOPDIR/manifest/$MACHINE.manifest ]; then
-        manifest=$TOPDIR/manifest/$MACHINE.manifest
-    elif [ -f $TOPDIR/manifest/default.manifest ]; then
-        manifest=$TOPDIR/manifest/default.manifest
-    else
-        echo "not found manifest file"
-        exit 1
-    fi
-fi
-. $manifest
-
 
 
 generate_kernel_uimage() {
@@ -126,8 +104,7 @@ generate_firmware() {
     if [ ! -d $TOPDIR/build/images ] ; then
         mkdir -p $TOPDIR/build/images
     fi
-    fwimg=$TOPDIR/build/images/firmware_${MACHINE}_${BOOTTYPE}boot_`date +%Y%m%d%H%M`.img
-    echo "fwimg: $fwimg"
+    fwimg=$TOPDIR/build/images/firmware_${MACHINE}_${BOOTTYPE}boot_`date +%Y%m%d%H%M`
     if [ ! -d $TOPDIR/images/$1 ] ; then
 	mkdir -p $TOPDIR/images/$1
     fi
@@ -146,7 +123,6 @@ generate_firmware() {
 	fi
     elif [ $2 = sd -a $bootloader = uboot ] ; then
 	# rcw and uboot in single image
-	echo step 1 $sd_rcw_bootloader_offset
 	dd if=$uboot_sdboot of=$fwimg bs=512 seek=$sd_rcw_bootloader_offset
     fi
 
@@ -208,12 +184,24 @@ generate_firmware() {
             val=`expr $(echo $(($nor_phy_firmware_offset))) / 1024`
             dd if=$phy_firmware of=$fwimg bs=1K seek=$val
 	elif [ $2 = sd ]; then
-		 echo step7-$sd_phy_firmware_offset
 	    dd if=$phy_firmware of=$fwimg bs=512 seek=$sd_phy_firmware_offset
 	fi
     fi
 
-    # 8. DPAA2 MC firmware
+
+    # 8. uboot boot script
+    if [ $uboot_scr != null ] ; then
+        echo $distroboot > $uboot_scr
+	mkimage -A arm64 -O linux -T script -C none -a 0 -e 0  -n "uboot auto script"  -d $uboot_scr $uboot_scr.bin
+        if [ $2 = nor ]; then
+            val=`expr $(echo $(($nor_uboot_scr_offset))) / 1024`
+            dd if=$uboot_scr.bin of=$fwimg bs=1K seek=$val
+        elif [ $2 = sd ]; then
+            dd if=$uboot_scr.bin of=$fwimg bs=512 seek=$sd_uboot_scr_offset
+        fi
+    fi
+
+    # 9. DPAA2 MC firmware
     if [ $dpaa2_mc_fw != null ] ; then
 	if [ $2 = nor ]; then
             val=`expr $(echo $(($nor_dpaa2_mc_fw_offset))) / 1024`
@@ -223,7 +211,7 @@ generate_firmware() {
 	fi
     fi
 
-    # 9. DPAA2 DPL firmware
+    # 10. DPAA2 DPL firmware
     if [ $dpaa2_mc_dpl != null ] ; then
 	if [ $2 = nor ]; then
             val=`expr $(echo $(($nor_dpaa2_mc_dpl_offset))) / 1024`
@@ -233,7 +221,7 @@ generate_firmware() {
 	fi
     fi
 
-    # 10. DPAA2 DPC firmware
+    # 11. DPAA2 DPC firmware
     if [ $dpaa2_mc_dpc != null ] ; then
 	if [ $2 = nor ]; then
             val=`expr $(echo $(($nor_dpaa2_mc_dpc_offset))) / 1024`
@@ -243,7 +231,7 @@ generate_firmware() {
 	fi
     fi
 
-    # 11. device tree image
+    # 12. device tree image
     if [ $device_tree != null ] ; then
 	if [ $2 = nor ]; then
             val=`expr $(echo $(($nor_device_tree_offset))) / 1024`
@@ -253,20 +241,20 @@ generate_firmware() {
 	fi
     fi
 
-    # 12. linux kernel image
+    # 13. linux kernel image
     if [ $kernel_uimg != null ] ; then
 	if [ ! -f $kernel_uimg ]; then
 	    generate_kernel_uimage
 	fi
 	if [ $2 = nor ]; then
-            val=`expr $(echo $(($nor_kernel_uimg_offset))) / 1024`
+            val=`expr $(echo $(($nor_kernel_offset))) / 1024`
             dd if=$kernel_uimg of=$fwimg bs=1K seek=$val
 	elif [ $2 = sd ]; then
-	    dd if=$kernel_uimg of=$fwimg bs=512 seek=$sd_kernel_uimg_offset
+	    dd if=$kernel_uimg of=$fwimg bs=512 seek=$sd_kernel_offset
 	fi
     fi
 
-    # 13. ramdisk rfs image
+    # 14. ramdisk rfs image
     if [ $ramdiskrfs != null ] ; then
 	if [ ! -f $ramdiskrfs  ]; then
 	    if [ $DESTARCH = arm32 ]; then
@@ -274,8 +262,11 @@ generate_firmware() {
 	    else
 		ARCHNAME=arm64
 	    fi
+	    if [ ! -f packages/installer/ramdiskrfs/ramdisk_rootfs_$DESTARCH.ext2.gz ]; then
+		./flex-builder  -i mkinstaller -a $DESTARCH
+	    fi
 	    mkimage -n 'u-boot ext2 ramdisk rfs' -A $ARCHNAME -O linux -T ramdisk -C gzip -d \
-	    packages/installer/ramdisk_rootfs_$DESTARCH.ext2.gz \
+	    packages/installer/ramdiskrfs/ramdisk_rootfs_$DESTARCH.ext2.gz \
 	    build/images/ramdisk_rootfs_$DESTARCH.ext2.gz.uboot   
 	fi
 	if [ $2 = nor ]; then
@@ -285,7 +276,8 @@ generate_firmware() {
 	    dd if=$ramdiskrfs of=$fwimg bs=512 seek=$sd_ramdiskrfs_offset
 	fi
     fi
-    echo generated $fwimg
+    tail -c +4097 $fwimg > $fwimg.img && rm $fwimg
+    echo generated $fwimg.img
 }
 
 
@@ -307,18 +299,23 @@ generate_installer() {
 	fi
     fi
     cd ..
+    chkmnt=`mount | grep mnt-20` ||true
+    if [ -n "$chkmnt" ]; then
+	umount mnt-*
+    fi
     rm -rf mnt-*
     mntdir=mnt-`date +%Y%m%d%H%M%S`
     mkdir $mntdir
-    ckmnt=`mount | grep $mntdir` ||true
-    if [ -z "$ckmnt"  ]; then
+    chkmnt=`mount | grep $mntdir` ||true
+    if [ -z "$chkmnt"  ]; then
 	sudo mount ramdiskrfs/ramdisk_rootfs_${DESTARCH}.ext2 $mntdir
     fi
     cp -f ../../flex-installer $mntdir/usr/bin/; cd ../..
     module_name=$(echo `ls -t $libmodules` | cut -d' ' -f1)
     rm -f $libmodules/$module_name/{build,source}
     sudo cp -rf $libmodules/$module_name packages/installer/$mntdir/lib/modules
-    sudo umount packages/installer/$mntdir && rm -rf packages/installer/$mntdir && gzip packages/installer/ramdiskrfs/ramdisk_rootfs_${DESTARCH}.ext2
+    sudo umount packages/installer/$mntdir && rm -rf packages/installer/$mntdir && \
+    gzip packages/installer/ramdiskrfs/ramdisk_rootfs_${DESTARCH}.ext2
     if [ ! -d build/images ]; then
 	mkdir -p build/images
     fi
@@ -341,7 +338,7 @@ generate_bootpartition_tarball() {
     linuxtreename=$(echo $kernel_uimg | cut -d/ -f4)
     cp $kernel_uimg build/images/bootpartition_$DESTARCH.d/uImage-$kernelrelease
     cp build/qoriq-linux/$linuxtreename/$DESTARCH/*.dtb build/images/bootpartition_$DESTARCH.d/
-    cd build/images/bootpartition_$DESTARCH.d && ln -s uImage-$kernelrelease vmlinuz
+    cd build/images/bootpartition_$DESTARCH.d && rm -f vmlinuz && ln -s uImage-$kernelrelease vmlinuz
     cd $TOPDIR/build/images
     tar cvzf  bootpartition_$DESTARCH.tgz bootpartition_$DESTARCH.d
     echo build/images/bootpartition_$DESTARCH.tgz  [Done]
@@ -351,7 +348,7 @@ generate_distrorfs_tarball() {
     ./flex-builder -c apps -a $DESTARCH
     if [ ! -f build/images/${distro_ver}_rootfs.d/etc/issue ]; then
         if [ ! -f build/images/${distro_ver}_rootfs.tgz ]; then
-	    if [ $origin_mkdistrorfs != y ]; then
+	    if [ "$origin_mkdistrorfs" != "yes" ]; then
 	        echo "trying to download $distro_rfs_url ..."
 	        cd build/images && wget $distro_rfs_url || true
 	    fi
@@ -359,7 +356,7 @@ generate_distrorfs_tarball() {
 		echo "trying to build ${distro_ver}_rootfs locally ..."
 		codename=$(echo $distro_ver | cut -d_ -f1)
 		tarch=$(echo $distro_ver | cut -d_ -f2)
-		./mkdistrorfs $tarch $codename
+		./flex-mkdistrorfs $tarch $codename
 	    fi
         fi
         cd $TOPDIR/build/images
@@ -367,8 +364,11 @@ generate_distrorfs_tarball() {
 	    tar xzf ${distro_ver}_rootfs.tgz
 	fi
     fi
-    tar cvzf ${distro_ver}_rootfs_`date +%Y%m%d%H%M`.tgz  ${distro_ver}_rootfs.d
-    echo build/images/${distro_ver}_rootfs_`date +%Y%m%d%H%M`.tgz  [Done]
+    cd $TOPDIR/build/images
+    tarballname=${distro_ver}_rootfs_`date +%Y%m%d%H%M`.tgz
+    echo packing $tarballname, please wait ...
+    tar czf $tarballname ${distro_ver}_rootfs.d
+    echo $tarballname  [Done]
 }
 
 
@@ -415,7 +415,7 @@ do
 		shift
 		;;
 	--origin)
-		origin_mkdistrorfs=y
+		origin_mkdistrorfs=yes
 		shift
 		;;
 	-h|--help)
@@ -429,13 +429,26 @@ do
 shift
 done
 
+
+if [ -z "$manifest" ]  ; then
+    if [ -f $TOPDIR/manifest/$MACHINE.manifest ]; then
+        manifest=$TOPDIR/manifest/$MACHINE.manifest
+    elif [ -f $TOPDIR/manifest/default.manifest ]; then
+        manifest=$TOPDIR/manifest/default.manifest
+    else
+        echo "not found manifest file"
+        exit 1
+    fi
+fi
+. $manifest
+
 DESTDIR=$TOPDIR/build/images/${distro_ver}_rootfs.d
 
 if [ ! -d $DESTDIR ]; then
     mkdir -p $DESTDIR
 fi
-if [ ! -d build/images/bootpartition_$DESTARCH.d/grub ]; then
-    mkdir -p build/images/bootpartition_$DESTARCH.d/grub
+if [ ! -d build/images/bootpartition_$DESTARCH.d ]; then
+    mkdir -p build/images/bootpartition_$DESTARCH.d
 fi
 
 

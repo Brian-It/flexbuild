@@ -18,21 +18,21 @@ uefi_sdboot=./build/qoriq-firmware/uefi/ls1043ardb/LS1043ARDB_EFI_SDBOOT.fd
 uefi_env=./build/qoriq-firmware/uefi/ls1043ardb/ls1043ARDBNV_EFI.fd
 ppa=./build/qoriq-firmware/ppa/soc-ls1043/ppa.itb
 secureboot_headers=null
-fman_ucode=null
+fman_ucode=build/qoriq-firmware/fm-ucode/fsl_fman_ucode_ls1043_r1.1_108_4_9.bin
 qe_firmware=./build/qoriq-firmware/qe-ucode/iram_Type_A_LS1021a_r1.0.bin
-phy_firmware_cortina=./build/qoriq-firmware/firmware-cortina/cs4315-cs4340-PHY-ucode.txt
+phy_firmware=./build/qoriq-firmware/firmware-cortina/cs4315-cs4340-PHY-ucode.txt
 dpaa2_mc_fw=null
 dpaa2_mc_dpc=null
 dpaa2_mc_dpl=null
 
 # [linux]
-kernel_src=./packages/qoriq-linux/dash-lts
-kernel_imgz=./build/qoriq-linux/dash-lts/arm64/Image.gz
-kernel_uimg=./build/qoriq-linux/dash-lts/arm64/uImage
-libmodules=./build/qoriq-linux/dash-lts/arm64/lib/modules
+kernel_src=./packages/qoriq-linux/linux
+kernel_imgz=./build/qoriq-linux/linux/arm64/Image.gz
+kernel_uimg=./build/qoriq-linux/linux/arm64/uImage
+libmodules=./build/qoriq-linux/linux/arm64/lib/modules
 
 # [dtb]
-device_tree=./build/qoriq-linux/dash-lts/arm64/fsl-ls1043a-rdb.dtb
+device_tree=./build/qoriq-linux/linux/arm64/fsl-ls1043a-rdb.dtb
 
 # [rootfs]
 ramdiskrfs=./build/images/ramdisk_rootfs_arm64.ext2.gz.uboot
@@ -47,6 +47,7 @@ nor_secureboot_headers_offset=0x00600000
 nor_fman_ucode_offset=0x00900000
 nor_qe_firmware_offset=0x00940000
 nor_phy_firmware_offset=0x00980000
+nor_uboot_scr_offset=0x009C0000
 nor_dpaa2_mc_fw_offset=0x00A00000
 nor_dpaa2_mc_dpl_offset=0x00D00000
 nor_dpaa2_mc_dpc_offset=0x00E00000
@@ -62,9 +63,14 @@ sd_secureboot_headers_offset=12296
 sd_fman_ucode_offset=18440
 sd_qe_firmware_offset=18952
 sd_phy_firmware_offset=19464
+sd_uboot_scr_offset=19976
 sd_dpaa2_mc_fw_offset=20488
 sd_dpaa2_mc_dpl_offset=26632
 sd_dpaa2_mc_dpc_offset=28680
 sd_device_tree_offset=32776
 sd_kernel_offset=34824
 sd_ramdiskrfs_offset=67592
+
+# auto scr for kernel boot options
+uboot_scr=build/images/ls1043ardb.scr
+distroboot="setenv bootargs console=ttyS0,115200 root=/dev/mmcblk0p3 rw earlycon=uart8250,mmio,0x21c0500;setenv distroboot ext2load mmc 0:2 81000000 /vmlinuz;ext2load mmc 0:2 90000000 /fsl-ls1043a-rdb.dtb;bootm 81000000 - 90000000;run distroboot"

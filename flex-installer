@@ -36,8 +36,8 @@
 #
 # Author: Shengzhou Liu <shengzhou.liu@nxp.com>
 #
-# an installation utility to install Ubuntu/CentOS/Debian to SD/USB/SATA
-# storage media online or offline based on u-boot and/or uefi bootloader.
+# a utility to install custom Ubuntu/CentOS/Debian to SD/USB/SATA
+# storage media online or offline
 #
 
 
@@ -48,7 +48,7 @@ ubuntu_version=xenial_arm64
 centos_arm64_version=7.2.1606
 centos_ppc64_version=7.2.1511
 debian_version=8
-internal_img_svr=sun.ap.freescale.net
+internal_img_svr=10.192.208.75
 distrosurl=http://${internal_img_svr}/dash
 release_ver=lsdk-1703
 
@@ -75,13 +75,23 @@ OPTION:
  -d, --distro          distro name, e.g. ubuntu, centos, debian
  -i, --instruction     instruction to execute
  -n, --netinterface    network interface optionally, e.g. eth0
- -M, --machine         target machine, e.g. 'ls2088ardb', 'ls1012ardb'
+ -M, --machine         target machine, e.g. ls2088ardb
+ -f, --firmware        firmware to be programmed into SD card or NOR flash
+ -b, --bootpart        boot partition images to be programmed into SD card
+ -r, --rootfs          distro rootfs images to be programmed into SD card
+ -D, --device          device name of SD/USB/SATA disk in Linux
+ -s, --startblock      start block number of SD card for programming firmware
  -h, --help            print help info
 
-e.g.   
-    $0 -m sd -d ubuntu -n eth0        # install ubuntu to SD card
-    $0 -m usb -d centos               # install centos to USB disk
-    $0 -m sata -d debian -n eth2      # install debian to SATA disk
+e.g.
+    $0 --bootpart=build/images/bootpartition_arm64.d  --rootfs=build/images/xenial_arm64_rootfs.d \
+       --firmware=build/images/firmware_ls1043ardb_sdboot_xxx.img --device=/dev/sdb
+    $0 --bootpart=http://<web-server>/bootpartition_arm64.tgz --rootfs=http://<web-server>/xenial_arm64_rootfs.tgz \
+       --firmware=http://<web-server>/firmware_ls1043ardb_sdboot_xxx.img --device=/dev/sdb
+    $0 --firmare=firmware_ls1043ardb_sdboot_xxx.img --startblock=8       # program firmware to SD card
+    $0 -m sd -d ubuntu -n eth0        # online install ubuntu to SD card
+    $0 -m usb -d centos               # online install centos to USB disk
+    $0 -m sata -d debian -n eth0      # online install debian to SATA disk
 EOF
     exit $1
 }
@@ -91,9 +101,11 @@ if [ -z "$1" -o "$1" = "--help" ] ; then
         exit 1
 fi
 
+# default
+media_type=sd
 
 
-ARGS=`getopt -a -o m:M:d:i:n:h -l machine:,meida:,distro:,instruction:,netinterface:,help -- "$@"`
+ARGS=`getopt -a -o m:M:d:i:n:f:b:r:D:s:h -l machine:,meida:,distro:,instruction:,netinterface:,firmware:,bootpart:,rootfs:,device:,startblock:,help -- "$@"`
 [ $? -ne 0 ] && usage
 eval set -- "${ARGS}"
 while true
@@ -120,9 +132,33 @@ do
                 ;;
         -n|--netinterface)
                 netinterface=$2
+		online=true
                 echo "netinterface: $netinterface"
                 shift
                 ;;
+	-f|--firmware)
+		firmware=$2
+		shift
+		;;
+	-s|--startblock)
+		startblock=$2
+		echo startblock: $startblock
+		shift
+		;;
+	-b|--bootpart)
+		bootpart=$2
+		shift
+		;;
+	-r|--rootfs)
+		rootfs=$2
+		echo "rootfs: $rootfs"
+		shift
+		;;
+	-D|--device)
+		mediadevice=$2
+		echo "mediadevice: $mediadevice"
+		shift
+		;;
         -h|--help)
                 usage
                 ;;
@@ -177,20 +213,11 @@ get_device_name_inside_installer() {
 
 
 get_device_name_on_host() {
-    echo "please specify device name of storage media to install (e.g. /dev/sdb):"
-    read tmpdev
-    echo "target storage: $tmpdev"
-    devname=${tmpdev##*/}
+    devname=${mediadevice##*/}
     if [ "$devname" = "mmcblk0" ] ; then
         devpartname=${devname}p
     else
         devpartname=${devname}
-    fi
-    echo "please specify target arch name(e.g. arm64, arm32, powerpc)"
-    read archname
-    if [ "$archname" != "arm64" -a "$archname" != "arm32" -a "$archname" != "powerpc" ] ; then
-        echo "invalid arch name"
-        exit 1
     fi
 }
 
@@ -198,14 +225,21 @@ if [ "$ARCH" = "x86_64" ] ; then
     get_device_name_on_host
 fi
 
-case $media_type in
-    sd|usb|sata|nor|qspi)
-        ;;
-    *)
-        echo "unsupported target media type: $media_type"
-        usage
-        exit 1
-esac
+chkrfs=`echo $rootfs | grep -E http` || true
+if [ -n "$chkrfs" ]; then
+    online=true
+    srcrfstype=http
+fi
+if [ -n "$rootfs" ] && [ -d $rootfs ]; then
+    echo $rootfs dir found
+    srcrfstype=dir
+    online=false
+elif [ -n "$rootfs" ] && [ -f $rootfs ] && [ echo $rootfs | grep -E *.tgz ]; then
+    echo $rootfs tarball found
+    srcrfstype=tgz
+    online=false
+fi
+
 
 if [ -n "$distro_type" ]  ; then
   case $distro_type in
@@ -269,8 +303,40 @@ search_dev() {
 }
 
 
+umount_device() {
+    mntnums=`cat /proc/mounts | grep ${devname} | wc -l`
+    if [ $mntnums = 1 ] ; then
+        umount $(cat /proc/mounts | grep  ${devname} | cut -d' ' -f1)
+    else
+        for (( i=1; i <= $mntnums; i++ ))
+        do
+            umount /dev/${devpartname}$i
+        done
+    fi
+}
+
+
+program_firmware_to_sd() {
+    # $1: firmware file,  $2: startblock, $3: device
+    if [ ! -b $3 ]; then
+        echo device $device not found
+        exit
+    fi
+    if [ ! -f $1 ]; then
+        echo firmware $1 not found
+        exit
+    fi
+    echo programming $1 into $3, startblock=$2
+    dd if=$1 of=$3 bs=512 seek=$2
+    echo $1 has been programmed into $3!
+}
+
+
 flex_install_distro() {
-    check_network
+    if [ "$online" = "true" ]; then
+        echo online = $online
+        check_network
+    fi
 
     if [ "$ARCH" != "x86_64" ] ; then
         get_device_name_inside_installer
@@ -278,96 +344,115 @@ flex_install_distro() {
 
     mntnums=`cat /proc/mounts | grep ${devname} | wc -l`
     if [ $mntnums = 1 ] ; then
-        umount $(cat /proc/mounts | grep  ${devname} | cut -d' ' -f1)
+        umount $(cat /proc/mounts | grep  ${devname} | cut -d' ' -f1) || true
     else
         for (( i=1; i <= $mntnums; i++ ))
         do
-	    umount /dev/${devpartname}$i
+	    umount /dev/${devpartname}$i || true
         done
     fi
     
     echo "Partitioning /dev/${devname} ..."
-    echo -e "o\nn\np\n1\n131072\n716800\nn\np\n2\n716801\n\nt\n1\nb\nw\n" | fdisk /dev/${devname}
+    echo -e "o\nn\np\n1\n131072\n172032\na\n\nn\np\n2\n172033\n786433\nn\np\n3\n786434\n\nt\n1\nb\nw\n" | fdisk /dev/${devname}
     sync
     
     echo "Formatting partitions ..."
     if [ "$media_type" = "sd" ] ; then
         uuid1=c6dc39d1
-        uuid2=8c371d826bd2
+        uuid2=6a681517b8d2
+	uuid3=8c371d826bd3
     elif [ "$media_type" = "usb" ] ; then
         uuid1=c6dc39b1
-        uuid2=8c371d826bb2
+        uuid2=6a681517b8b2
+        uuid3=8c371d826bb3
     elif [ "$media_type" = "sata" ] ; then
         uuid1=c6dc39a1
-        uuid2=8c371d826ba2
+        uuid2=6a681517b8a2
+        uuid3=8c371d826ba3
     fi
     
-    mntnums=`cat /proc/mounts | grep ${devname} | wc -l`
-    if [ $mntnums = 1 ] ; then
-        umount $(cat /proc/mounts | grep  ${devname} | cut -d' ' -f1)
-    else
-        for (( i=1; i <= $mntnums; i++ ))
-        do
-            umount /dev/${devpartname}$i
-        done
+    # install firmware
+    if [ -n "$firmware" ] ; then
+	umount_device
+	if [ `echo $firmware | grep http` ]; then
+	    wget $firmware || true
+	    fwfile=`ls firmware*.img`|| true
+	    program_firmware_to_sd $fwfile 8 /dev/$devname
+        else
+	    program_firmware_to_sd $firmware 8 /dev/$devname
+	fi
     fi
-    mkfs.vfat -n boot -i ${uuid1} /dev/${devpartname}1
 
-    mntnums=`cat /proc/mounts | grep ${devname} | wc -l`
-    if [ $mntnums = 1 ] ; then
-        umount $(cat /proc/mounts | grep  ${devname} | cut -d' ' -f1)
-    else
-        for (( i=1; i <= $mntnums; i++ ))
-        do
-            umount /dev/${devpartname}$i
-        done
-    fi 
-    mkfs.ext4 -v -O ^huge_file -b 4096 -L rootfs -U 865ee0da-5933-445c-b9d7-${uuid2} /dev/${devpartname}2
-   
-    if [ ! -d /run/media ] ; then
-        mkdir /run/media
-    fi
-    if [ ! -d /run/media/${devpartname}1 ] ; then
-        mkdir /run/media/${devpartname}1
-    fi
+    umount_device
+    mkfs.vfat -n EFI -i ${uuid1} /dev/${devpartname}1
+
+    umount_device
+    mkfs.ext4 -v -b 4096 -L boot -U c6dc39a1-a7f2-4b75-b1a0-${uuid2} /dev/${devpartname}2
+    mkfs.ext4 -v -O ^huge_file -b 4096 -L rootfs -U 865ee0da-5933-445c-b9d7-${uuid3} /dev/${devpartname}3
+
     if [ ! -d /run/media/${devpartname}2 ] ; then
-        mkdir /run/media/${devpartname}2
+        mkdir -p /run/media/${devpartname}2
+    fi
+    if [ ! -d /run/media/${devpartname}3 ] ; then
+        mkdir -p /run/media/${devpartname}3
     fi
     
-    mntnums=`cat /proc/mounts | grep ${devpartname} | wc -l`
-    if [ "${mntnums}" = "0" ] ; then
-        mount /dev/${devpartname}1  /run/media/${devpartname}1
-    fi
     mount /dev/${devpartname}2  /run/media/${devpartname}2
-    
-    cd /run/media/${devpartname}1
-    #wget ${distrosurl}/${bootpartitiontarball} -O /dev/stdout | gunzip | cpio -idm
-echo trying to wget ${distrosurl}/${bootpartitiontarball}
-    wget ${distrosurl}/${bootpartitiontarball} -O /dev/stdout | tar xz
-    tbdir=$(echo `ls`)
-    mv $tbdir/* . && rm -rf $tbdir
-    sync
-    echo "partition 1 installing: finished"
-    
-    cd /run/media/${devpartname}2
-    # wget ${distrosurl}/${distroimg} -O /dev/stdout | gunzip | cpio -idm
-    echo installing ... wait ...
-    wget ${distrosurl}/${distroimg} -O /dev/stdout | tar xz
-    tbdir=$(echo `ls`)
-    mv $tbdir/* . && rm -rf $tbdir
-    if [ "$media_type" = "usb" ] ; then
-        sed -i 's/f9e57d6e38d1/f9e57d6e38b1/g' /run/media/${devpartname}2/etc/fstab
-        sed -i 's/8c371d826bd2/8c371d826bb2/g' /run/media/${devpartname}2/etc/fstab
-    elif [ "$media_type" = "sata" ] ; then
-        sed -i 's/f9e57d6e38d1/f9e57d6e38a1/g' /run/media/${devpartname}2/etc/fstab
-        sed -i 's/8c371d826bd2/8c371d826ba2/g' /run/media/${devpartname}2/etc/fstab
+    mount /dev/${devpartname}3  /run/media/${devpartname}3
+
+    # for offline install
+    if [ "$srcrfstype" = "dir" -a "$online" != "true" ]; then
+	echo "offline installing with dir, please wait ..."
+	cp -rf $bootpart/* /run/media/${devpartname}2
+        cp -rf $rootfs/* /run/media/${devpartname}3
+    elif [ "$srcrfstype" = "tgz" -a "$online" != "true" ]; then
+	echo "offline installing with tgz, please wait ..."
+	tar xz $bootpart /run/media/${devpartname}2
+	cd /run/media/${devpartname}2
+	mv bootpartition_arm*.d/* .
+	rm -rf bootpartition_arm*.d
+	cd -
+	echo installing rootfs, please wait ...
+	tar xz $rootfs /run/media/${devpartname}3
+	cd /run/media/${devpartname}3
+	mv *rootfs.d/* . && rm -rf *rootfs.d
+	cd -
+    # for online install
+    elif [ "$online" = "true" ]; then
+	echo online install ...
+        cd /run/media/${devpartname}2
+	if [ ${ARCH} != "x86_64" -a -z "$rootfs" ]; then
+	    # back compatible with existing LARS auto test on arm board
+            wget ${distrosurl}/${bootpartitiontarball} -O /dev/stdout | tar xz
+	elif [ $srcrfstype = http ]; then
+	    wget $bootpart -O /dev/stdout | tar xz
+	fi
+        mv bootpartition_arm*.d/* . && rm -rf bootpartition_arm*.d
+
+	cd /run/media/${devpartname}3
+	if [ ${ARCH} != "x86_64" -a -z "$rootfs" ]; then
+	    # back compatible with existing
+	    wget ${distrosurl}/${distroimg} -O /dev/stdout | tar xz
+	elif [ $srcrfstype = http ]; then
+	    wget $rootfs -O /dev/stdout | tar xz
+	fi
+	mv *rootfs.d/* . && rm -rf *rootfs.d
     fi
     sync
-    echo "partition 2 installing: finished"
+    
+    if [ "$media_type" = "usb" ] ; then
+        sed -i 's/d826bd3/d826bb3/g' /run/media/${devpartname}3/etc/fstab
+        sed -i 's/517b8d2/517b8b2/g' /run/media/${devpartname}3/etc/fstab
+    elif [ "$media_type" = "sata" ] ; then
+        sed -i 's/d826bd3/d826ba3/g' /run/media/${devpartname}3/etc/fstab
+	sed -i 's/517b8d2/517b8a2/g' /run/media/${devpartname}3/etc/fstab
+    fi
+    sync
+    echo "rootfs partition installing: finished"
     cd ~
     df -h
     blkid
-    ckuuid=`grep 865ee0da /run/media/${devpartname}2/etc/fstab | cut -d'-' -f1`
+    ckuuid=`grep 865ee0da /run/media/${devpartname}3/etc/fstab | cut -d'-' -f1`
     if [ "$ckuuid" = "UUID=865ee0da" ] ; then
         echo "$distro_type installation finished successfully"
     else
@@ -375,101 +460,8 @@ echo trying to wget ${distrosurl}/${bootpartitiontarball}
     fi
 }
 
-program_firmware_to_sd() {
-    check_network
-    case $instruction in
-        uboot)
-	    fwimage=u-boot-${machine}-sdboot.bin
-	    wget $distrosurl/Firmware/U-Boot/${release_ver}/$fwimage
-	    if [ -f $fwimage ] ; then
-		echo "burning $fwimage to sd card for ${machine} ..."
-                dd if=$fwimage of=/dev/mmcblk0 bs=1K seek=4
-	    else
-		echo "$fwimage not available"
-		exit 1
-	    fi
-	    ;;
-	uefi)
-	    fwimage=uefi-${machine}-sdboot.bin
-            wget $distrosurl/Firmware/UEFI/${release_ver}/$fwimage
-            if [ -f $fwimage ] ; then
-                dd if=$fwimage of=/dev/mmcblk0 bs=1K seek=4
-            else
-                echo "image $fwimage not available"
-                exit 1
-            fi
-	    ;;
-	ppa)
-	    fwimage=ppa-${machine}.itb
-            wget $distrosurl/Firmware/ppa/${release_ver}/$fwimage
-            if [ -f $fwimage ] ; then
-                dd if=$fwimage of=/dev/mmcblk0 bs=1K seek=13316
-            else
-                echo "image $fwimage not available"
-                exit 1
-            fi
-	    ;;
-	mcfw)
-            fwimage=mc_${machine}.itb
-            wget $distrosurl/Firmware/mc/$fwimage
-            if [ -f $fwimage ] ; then
-                dd if=$fwimage of=/dev/mmcblk0 bs=1K seek=3076
-            else
-                echo "image $fwimage not available"
-                exit 1
-            fi
-            ;;
-        fman)
-            fwimage=fman_ucode_${machine}.bin
-            wget $distrosurl/Firmware/ethphy/$fwimage
-            if [ -f $fwimage ] ; then
-                dd if=$fwimage of=/dev/mmcblk0 bs=1K seek=15364
-            else
-                echo "image $fwimage not available"
-                exit 1
-            fi
-            ;;
-        phy-cortina)
-            fwimage=cs4315-cs4340-PHY-ucode.txt
-            wget $distrosurl/Firmware/ethphy/$fwimage
-            if [ -f $fwimage ] ; then
-                dd if=$fwimage of=/dev/mmcblk0 bs=1K seek=15620
-            else
-                echo "image $fwimage not available"
-                exit 1
-            fi
-            ;;
-        dash-installer)
-            fwimage=dash_installer_${archname}.bin
-            wget $distrosurl/dash-installer/$fwimage
-            if [ -f $fwimage ] ; then
-                dd if=$fwimage of=/dev/mmcblk0 bs=1K seek=15876
-            else
-                echo "image $fwimage not available"
-                exit 1
-            fi
-            ;;
-	?)
-		echo "unsupported firmware type"
-		exit 1
-    esac
-}
-
-program_firmware_to_nor() {
-    echo "burn to nor to be done later"
-    exit 1
-}
-
-
-if [ -n "$distro_type" ] ; then
+if [ -n "$startblock" ]; then
+    program_firmware_to_sd $firmware $startblock $mediadevice
+else
     flex_install_distro
-elif [ -n "$BURNIMGTYPE" ] ; then
-    if [ "$media_type" = "sd" ] ; then
-        program_firmware_to_sd
-    elif [ "$media_type" = "nor" ] ; then
-        program_firmware_to_nor
-    else
-        echo "$media_type: burning firmware is not supported on this media type"
-        exit 1
-    fi
 fi

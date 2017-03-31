@@ -1,91 +1,126 @@
 What is Flexbuild
 -----------------
-     Flexbuild is a build framework with build, installation, integration.
-     It builds images and firmwares for various components (linux,uboot,uefi,
-     ppa,rcw,firmware,apps) and distros images.
-     - support cross build on any x86 Linux host machine for arm64/arm32 arch target
-     - support native build on arm64/arm32 machine for arm arch target
-     - generate custom aarch64/armhf ubutnu rootfs integrated configurable
-       upstream packages and proprietary components.
+    Flexbuild is an integrated build framework with build and installation.
+    It builds desired images and firmwares for various components (linux,
+    u-boot, uefi, ppa, rcw, apps) and Debian/Ubuntu based distro userland.
+    - support cross build on any x86 Linux host machine for ARM arch target
+    - support native build on aarch64/armhf machine for ARM arch target
+    - generate custom aarch64/armhf Debian/Ubuntu userland integrated configurable
+      upstream packages and proprietary components.
 
 
 
-How to build viarious components and ubutnu based userland with Flexbuild
+How to build various components and Ubutnu based userland with Flexbuild
 -------------------------------------------------------------------------
-    This build system supports following 3 kinds of build environment:
-    - support cross build on X86 ubuntu 16.04 host machine for ARM target machine (default ubuntu cross toolchain 5.4 for aarch64/armhf)
-    - support native build on aarch64/armhf machine for ARM target machine (default ubuntu native toolchain 5.4 for aarch64/armhf)
-   - support build in docker container without environment dependency of ubuntu host machine
-
-As well, it supports cross generating custom aarch64/armhf/x86 ubutnu rootfs with preinstalled
-packages specified by TOPDIR/packages/additional_packages_list and NXP's components on X86 host machine.
-
- 1. clone git repo
-	for internal:
-	$ git clone  ssh://git@sw-stash.freescale.net/dash/flexbuild.git
-
-	for external:
+    1. clone flexbuild git repo
 	$ git clone  ssh://github.com/qoriq-open-source/flexbuild.git
+	$ cd flexbuild
 
+    2. check default build.cfg as per actual need, check manifest/<machine>.manifest to match actual machine.
 
- 2. optionally, check default build.cfg as per actual need, check <machine>.manifest to match actual machine.
+    3. build single or all desired components to generate target images/firmwares/userland tarball
+	$ ./flex-builder
+	Usage:
+	flex-builder <option> <parameters> [<option> <parameters>]
+	option:
+	 -m, --machine         target machine
+	 -a, --arch            target arch to override default arch, valid: 'arm64', 'arm32'
+	 -b, --boottype        type of boot media, valid argument: 'nor', 'sd'
+	 -j, --jobs            the number of build jobs
+	 -c, --component       specify single or all components to build, valid argument:
+				   linux|uboot|uefi|ppa|rcw:   build single component only
+				   firmware: build all firmwares(u-boot,uefi,ppa,rcw,linux,etc)
+				   apps: build all apps tool(restool,fmc,usdpaa,dpdp,dce,etc)
+				   all:  build all components(linux, firmware, apps)
+	 -i, --instruction     instruction to generate target image, valid argument:
+				   mkfw: generate firmware image for NOR/SD boot
+				   mkinstaller: generate flex_installer_<arch>.itb
+				   mkbootpart: generate boot partion tarball contained kernel,dtb,installer
+				   mkrfs: generate ubuntu userland integrated specified packages and apps components
+	 -h, --help            print help info
 
-
- 3. build single or all desired component(s) to generate target images/firmwares/userland tarball
 	e.g.
-	./builder --help			// view help info
-	./builder -c uboot -m ls2088ardb	// build u-boot for machine ls2088ardb
-	./builder -c linux -a arm64		// build linux for arm64
-	./builder -c apps -a arm64		// build all apps components for arm64 machines
-	./builder -c firmware -m ls1043ardb     // build all firmwares for machine ls1043ardb
-	./builder -i mkfw -m ls2088ardb -b nor  // generate firmware image for norboot on ls2088ardb
-	./builder -i mkinstaller -a arm64       // generate installer_arm64.itb for all arm64 machines
-	./builder -i mkrfs -a arm64		// generate ubuntu userland contained nxp's apps components
+	./flex-builder -c uboot -m ls2088ardb	     // build u-boot for machine ls2088ardb
+	./flex-builder -c linux -a arm64             // build linux for arm64
+	./flex-builder -c apps -a arm64              // build all apps components for arm64 machines
+	./flex-builder -c firmware -m ls1043ardb     // build all firmwares for machine ls1043ardb
+	./flex-builder -i mkfw -m ls2088ardb -b nor  // generate firmware image for norboot on ls2088ardb machine
+	./flex-builder -i mkinstaller -a arm64       // generate flex_installer_arm64.itb for all arm64 machines
+	./flex-builder -i mkbootpart -a arm64        // generate stuff for boot partition contained kernel, dtb, installer, etc
+	./flex-builder -i mkrfs -a arm64	     // generate Ubuntu userland contained proprietary apps components
 
 
 
-Install
--------
-case 1: install ubuntu to SD/USB/SATA media attached on QorIQ ARM machine/board online via network
-	download installer from http://sun.ap.freescale.net/dash/Dash-installer and put it to tftp server directory.
-
+Install distro with flex-installer
+----------------------------------
+case 1: online install custom distro to SD/USB/SATA disk which is connected to ARM arch development board
+	run ./flex-builder -i mkinstaller -a arm64 to generate flex_installer_arm64.itb)
+	put flex_installer_arm64.itb to tftp server directory.
 	for arm64:
 	=> tftp a0000000 flex_installer_arm64.itb
 	=> bootm a0000000#<board-name>
-	<board-name>: ls1012ardb ls1012afrdm ls1021atwr ls1043ardb ls1046ardb ls2088ardb
+	e.g. <board-name>: ls1012ardb, ls1012afrdm, ls1021atwr, ls1043ardb, ls1046ardb, ls2088ardb
 
 	for arm32:
 	=> tftp a0000000 flex_installer_arm32.itb
 	=> bootm a0000000#<board-name>
-	<board-name>: ls1021atwr, ls1043ardb, ls1046ardb, ls1012ardb, ls1012frdm
+	e.g. <board-name>: ls1021atwr, ls1043ardb, ls1046ardb, ls1012ardb, ls1012frdm
 
-	after entering Linux prompt, run 'installer' command.
-	Usage:  installer OPTION [ARG] [OPTION [ARG]]
+	after entering Linux prompt, run 'flex-installer' command.
+	Usage:  flex-installer OPTION [ARG] [OPTION [ARG]]
 	OPTION:
-	-m : media type of the target disk, e.g. 'sd', 'usb', 'sata'
+	-m : media type of the target disk, e.g. sd, usb, sata
 	-d : distro name, e.g. 'ubuntu', 'centos', 'debian'
-	-n : NIC name to configure Ethernet IP by DHCP, e.g. 'eth0', 'enp0s2', optionally
+	-n : network interface name to configure network by DHCP, e.g. eth0, optionally
 	-h : print help info
 
-	e.g. flex-installer -m sd -d ubuntu -n eth0
+	for example:
+	flex-installer -m sd -d ubuntu -n eth0
+	  or
+	flex-installer --bootpart=http://10.192.208.75/dash/Dash-kernel/lsdk-1703/bootpartition_arm64.tgz \
+	                      --rootfs=http://10.192.208.75/dash/Ubuntu/lsdk-1703/xenial_arm64_rootfs.tgz --device=/dev/mmcblk0
+
+case 2: offline install custom distro(ubuntu/debian/centos) to SD/USB/SATA disk connected on Linux host machine
+	a. insert SD/USB/SATA storage device to Linux Host machine
+	b. $ git clone https://github.com/qoriq-open-source/flexbuild.git && cd flexbuild
+	c. $ ./flex-installer  --bootpart=build/images/bootpartition_arm64.d  --rootfs=build/images/xenial_arm64_rootfs.d --device=/dev/sdx
+	(note: sdx should be actual device name on your host)
 
 
-case 2: install ubuntu to SD/USB/SATA disk attached on x86 Linux machine offline without network
-	a. insert SD/USB/SATA storage media to X86 Linux host machine
-	b. untar the *.tgz ubuntu tarball and find installer in the root directory of untar package
-	b. run ./flex-installer
+How to program firmware to SD card
+----------------------------------
+	take ls1043ardb for example:
+	under u-boot:
+	  run "./flex-builder -i mkfw -m ls1043ardb -b sd" to generate firmware_1s1043ardb_sdboot_xxx.img for sdboot
+	  => tftp a0000000 firmware_1s1043ardb_sdboot_xxx.img
+	  => mmc write a0000000 8 1fff8
+	  => cpld reset sd
+	under Linux:
+	  $ ./flex-installer --firmware=firmware_1s1043ardb_sdboot_xxx.img --startblock=8 --device=/dev/mmcblk0
 
+
+
+How to boot distro from SD card under u-boot
+--------------------------------------------
+	after installing distro by flex-installer, automation script is programmed into SD card for quick boot distro
+	=> mmc read a0000000 4E08 1; source a0000000
+
+
+How to add proprietary component to ubuntu userland
+---------------------------------------------------
+        a. add new BUILD_<component> to build.cfg
+	b. Edit packages/qoriq-apps/Makefile to support new <component>
+	c. run ./flex-builder -c apps -a <arch> to get new <component> built
+	d. run ./flex-builder -i mkrfs -a <arch> to get new <component> included in ubuntu userland
 
 
 How to add additional upstream packages to ubuntu userland
 ----------------------------------------------------------
-	1. add desired packages to packages/additional_packages_list
-	2. run ./flex-builder -i mkrfs -a <arch>
+	a. add desired packages to packages/additional_packages_list
+	b. run ./flex-builder -i mkrfs -a <arch>
+	c. install the new Ubuntu userland to target machine via flex-installer
 
 
-
-How to enable/disable various components
------------------------------------------
-	1. set BUILD_<component> to y or n in build.cfg
-	2. run ./builder -c <component> -a <arch>
-
+How to enable/disable various components to be compiled
+-------------------------------------------------------
+	set BUILD_<component> to y or n in build.cfg to include/exclude the specified <component>.
